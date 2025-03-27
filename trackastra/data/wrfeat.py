@@ -415,7 +415,7 @@ def _transform_affine(k: str, v: np.ndarray, M: np.ndarray):
     ndim = len(M)
     
     if k == "area":
-        v = np.linalg.det(M) * v
+        v = np.abs(np.linalg.det(M)) * v
     elif k == "equivalent_diameter_area":
         # v = np.linalg.det(M) ** (1 / len(M)) * v
         v = np.abs(np.linalg.det(M)) ** (1 / len(M)) * v

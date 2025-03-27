@@ -46,7 +46,6 @@ logger = logging.getLogger(__name__)
 # logger.setLevel(logging.INFO)
 logger.setLevel(logging.DEBUG)  # FIXME go back to INFO for release
 
-
 def _filter_track_df(df, start_frame, end_frame, downscale):
     """Only keep tracklets that are present in the given time interval."""
     # only retain cells in interval
@@ -122,8 +121,35 @@ def debug_function(f):
 
 
 class CTCData(Dataset):
-    feature_extractor = None
-
+    """Cell Tracking Challenge data loader."""
+    # Amount of feature per mode per dimension
+    FEATURES_DIMENSIONS = {
+        "wrfeat": {
+            2: 7,
+            3: 12,
+        },
+        "regionprops": {
+            2: 7,
+            3: 11,
+        },
+        "regionprops2": {
+            2: 6,
+            3: 11,
+        },
+        "patch": {
+            2: 256,
+            3: 256,
+        },
+        "patch_regionprops": {
+            2: 256 + 5,
+            3: 256 + 8,
+        },
+        "none": {
+            2: 0,
+            3: 0,
+        }
+        # "pretrained_feats" -> defined by PretrainedFeatureExtractorConfig.feat_dim
+    }
     def __init__(
         self,
         root: str = "",
@@ -152,8 +178,7 @@ class CTCData(Dataset):
         pretrained_backbone_config: PretrainedFeatureExtractorConfig | None = None,
         **kwargs,
     ) -> None:
-        """Cell Tracking Challenge data loader.
-
+        """
         Args:
             root (str):
                 Folder containing the CTC TRA folder.
@@ -237,17 +262,18 @@ class CTCData(Dataset):
             self.img_folder = self._guess_img_folder(self.root)
         logger.info(f"IMG (guessed):\t{self.img_folder}")
 
-        self.pretrained_config = None
+        self._pretrained_config = None
         if features == "pretrained_feats": 
             if pretrained_backbone_config is None:
                 raise ValueError("Pretrained backbone config must be provided for pretrained features mode.")
             self.pretrained_config = pretrained_backbone_config
             if self.pretrained_config.save_path is None:
                 self.pretrained_config.save_path = self.img_folder
+            self.FEATURES_DIMENSIONS["pretrained_feats"] = self.pretrained_config.feat_dim
         
-        self.feat_dim, self.augmenter, self.cropper = self._setup_features_augs(
-            ndim, features, augment, crop_size
-        )
+        self.augment_level = augment
+        self.crop_size = crop_size
+        self.augmenter, self.cropper = self._setup_features_augs()
 
         if window_size <= 1:
             raise ValueError("window must be >1")
@@ -265,6 +291,7 @@ class CTCData(Dataset):
         self._pretrained_model_input_size_factor = 1
         self.feature_extractor_input_size = None
         self.pretrained_features = None
+        self.feature_extractor = None
 
         start = default_timer()
 
@@ -292,11 +319,27 @@ class CTCData(Dataset):
         if kwargs:
             logger.warning(f"Unused kwargs: {kwargs}")
 
-    # def from_ctc
-
+    @property
+    def feat_dim(self):
+        return self.FEATURES_DIMENSIONS[self.features][self.ndim]
+    
+    @property
+    def pretrained_config(self):
+        return self._pretrained_config
+    
+    @pretrained_config.setter
+    def pretrained_config(self, config: PretrainedFeatureExtractorConfig):
+        self.FEATURES_DIMENSIONS["pretrained_feats"] = config.feat_dim
+        self._pretrained_config = config
+    
+    @staticmethod
+    def get_feat_dim(features, ndim, ):
+        return CTCData.FEATURES_DIMENSIONS[features][ndim]
+    
     @classmethod
     def from_arrays(cls, imgs: np.ndarray, masks: np.ndarray, train_args: dict):
         self = cls(**train_args)
+    # def from_ctc
         # for key, value in train_args.items():
         #     setattr(self, key, value)
 
@@ -335,9 +378,7 @@ class CTCData(Dataset):
         # self.img_folder = self._guess_img_folder(self.root)
         # logger.info(f"IMG:\t\t{self.img_folder}")
 
-        self.feat_dim, self.augmenter, self.cropper = self._setup_features_augs(
-            self.ndim, self.features, self.augment, self.crop_size
-        )
+        self.feat_dim, self.augmenter, self.cropper = self._setup_features_augs()
 
         start = default_timer()
 
@@ -380,45 +421,29 @@ class CTCData(Dataset):
         return n_divs
 
     def _setup_features_augs(
-        self, ndim: int, features: str, augment: int, crop_size: tuple[int]
+        self
     ):
         if self.features in ["wrfeat", "pretrained_feats"]:
-            return self._setup_features_augs_wrfeat(ndim, features, augment, crop_size)
+            return self._setup_features_augs_wrfeat()
 
         cropper = (
             RandomCrop(
-                crop_size=crop_size,
-                ndim=ndim,
+                crop_size=self.crop_size,
+                ndim=self.ndim,
                 use_padding=False,
                 ensure_inside_points=True,
             )
-            if crop_size is not None
+            if self.crop_size is not None
             else None
         )
 
         # Hack
         if self.features == "none":
-            return 0, default_augmenter, cropper
+            return default_augmenter, cropper
 
-        if ndim == 2:
-            augmenter = AugmentationPipeline(p=0.8, level=augment) if augment else None
-            feat_dim = {
-                "none": 0,
-                "regionprops": 7,
-                "regionprops2": 6,
-                "patch": 256,
-                "patch_regionprops": 256 + 5,
-                # "pretrained_feats": AVAILABLE_PRETRAINED_BACKBONES[self.pretrained_backbone_name]["feat_dim"],
-            }[features]
-        elif ndim == 3:
-            augmenter = AugmentationPipeline(p=0.8, level=augment) if augment else None
-            feat_dim = {
-                "none": 0,
-                "regionprops2": 11,
-                "patch_regionprops": 256 + 8,
-            }[features]
+        augmenter = AugmentationPipeline(p=0.8, level=self.augment_level) if self.augment_level else None
 
-        return feat_dim, augmenter, cropper
+        return augmenter, cropper
 
     def _compress_data(self):
         # compress masks and assoc_matrix
@@ -501,20 +526,6 @@ class CTCData(Dataset):
     def __len__(self):
         return len(self.windows)
     
-    def _get_wrfeat_feats_dims(self, ndim: int, features: str):
-        dims = {
-            "wrfeat": {
-                2: 7,
-                3: 12,
-            },
-        }
-        if features == "wrfeat":
-            return dims[features][ndim]
-        elif features == "pretrained_feats":
-            return self.pretrained_config.feat_dim
-        else:
-            raise ValueError(f"Unknown feature dimension for {features}. Consider updating this method.")
-
     def _load_gt(self):
         logger.info("Loading ground truth")
         self.start_frame = int(
@@ -1058,13 +1069,12 @@ class CTCData(Dataset):
     # -> updated _setup_features_augs_wrfeat to use a factory instead
 
     def _setup_features_augs_wrfeat(
-        self, ndim: int, features: str, augment: int, crop_size: tuple[int]
+        self
     ):
-        feat_dim = self._get_wrfeat_feats_dims(ndim, features)
-        augmenter = wrfeat.AugmentationFactory.create_augmentation_pipeline(augment)
-        cropper = wrfeat.AugmentationFactory.create_cropper(crop_size, ndim)
+        augmenter = wrfeat.AugmentationFactory.create_augmentation_pipeline(self.augment_level)
+        cropper = wrfeat.AugmentationFactory.create_cropper(self.crop_size, self.ndim) if self.crop_size is not None else None
 
-        return feat_dim, augmenter, cropper
+        return augmenter, cropper
 
     def _load_wrfeat(self):
         # Load ground truth

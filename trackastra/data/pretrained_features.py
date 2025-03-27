@@ -252,7 +252,7 @@ class FeatureExtractor(ABC):
         feats = torch.zeros(len(coords), self.hidden_state_size, device=self.device)
         
         if self.mode == "nearest_patch":
-            feats = self._nearest_patches(coords)    
+            feats = self._nearest_patches(coords, masks)  
         elif self.mode == "mean_patches":
             if masks is None or labels is None or timepoints is None:
                 raise ValueError("Masks and labels must be provided for mean patch mode.")
@@ -409,7 +409,30 @@ class FeatureExtractor(ABC):
         regions = regionprops(image_mask)
         return self._find_bbox_cells(regions, patch_height, patch_width)
     
-    def _nearest_patches(self, coords):
+    def _debug_show_patches(self, embeddings, masks, coords, patch_idxs):
+            import napari
+            v = napari.Viewer()
+            # v.add_labels(masks)
+            e = embeddings.detach().cpu().numpy().swapaxes(1, 2).reshape(-1, self.hidden_state_size, self.final_grid_size, self.final_grid_size).swapaxes(0, 1)
+            v.add_image(
+                e,
+                name="Embeddings",
+            )
+            # add red points at patch indices for the relevant frame
+            points = np.zeros((len(patch_idxs) * self.hidden_state_size, 3))
+            for i, (t, y, x) in enumerate(patch_idxs):
+                point = np.array([t, y, x])
+                points[i * self.hidden_state_size:(i + 1) * self.hidden_state_size] = np.tile(point, (self.hidden_state_size, 1))
+            
+            v.add_points(points, size=1, face_color='red', name='Patch Indices')
+    
+            from skimage.transform import resize
+            masks_resized = resize(masks[0], (self.final_grid_size, self.final_grid_size), anti_aliasing=False, order=0, preserve_range=True)
+            v.add_labels(masks_resized)
+            
+            napari.run()
+            
+    def _nearest_patches(self, coords, masks=None):
         """Finds the nearest patches to the detections in the embedding."""
         # find coordinate patches from detections
         patch_coords = self._map_coords_to_model_grid(coords)
@@ -419,10 +442,15 @@ class FeatureExtractor(ABC):
         # load the embeddings and extract the relevant ones
         feats = torch.zeros(len(coords), self.hidden_state_size, device=self.device)
         indices = [y * self.final_grid_size + x for _, y, x in patch_idxs]
-
+        
         unique_timepoints = list(set(t for t, _, _ in patch_idxs))
         # logger.debug(f"Unique timepoints: {unique_timepoints}")
         embeddings = self._load_features()
+        
+        # t = coords[0][0]
+        # if t > 80:
+            # self._debug_show_patches(embeddings, masks, coords, patch_idxs)
+
         # logger.debug(f"Embeddings shape: {embeddings.shape}")
         embeddings_dict = {t: embeddings[t] for t in unique_timepoints}
         try:

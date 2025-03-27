@@ -801,6 +801,16 @@ def train(args):
         raise ValueError(
             f'Logdir {logdir} exists, set "--resume t"  if you want to overwrite'
         )
+        
+    pretrained_config = None
+    if args.features == "pretrained_feats":
+        from trackastra.data.pretrained_features import PretrainedFeatureExtractorConfig
+        pretrained_config = PretrainedFeatureExtractorConfig(
+            model_name=args.pretrained_feats_model,
+            mode=args.pretrained_feats_mode,
+            save_path=None if args.cachedir is None else Path(args.cachedir).resolve() / "embeddings",
+        )
+
 
     n_gpus = torch.cuda.device_count() if args.distributed else 1
     if args.preallocate:
@@ -820,6 +830,7 @@ def train(args):
             sanity_dist=args.sanity_dist,
             crop_size=args.crop_size,
             compress=args.compress,
+            pretrained_backbone_config=pretrained_config,
         )
         dummy_model = TrackingTransformer(
             coord_dim=dummy_data.ndim,
@@ -871,7 +882,7 @@ def train(args):
 
     if args.only_prechecks:
         return locals()
-
+    
     dataset_kwargs = dict(
         ndim=args.ndim,
         detection_folders=args.detection_folders,
@@ -883,6 +894,7 @@ def train(args):
         sanity_dist=args.sanity_dist,
         crop_size=args.crop_size,
         compress=args.compress,
+        pretrained_backbone_config=pretrained_config,
     )
     sampler_kwargs = dict(
         batch_size=args.batch_size,
@@ -951,8 +963,9 @@ def train(args):
         else:
             model = TrackingTransformer.from_folder(fpath, args=args)
     else:
-        # FIXME(cy) hardcoded feat_dim
-        feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12
+        # feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12 # FIXME
+        feat_dim = CTCData.get_feat_dim(args.features, args.ndim)
+        logger.debug(f"FEAT DIM : {feat_dim}")
         model = TrackingTransformer(
             # coord_dim=datasets["train"].datasets[0].ndim,
             coord_dim=args.ndim,
@@ -1132,6 +1145,7 @@ def parse_train_args():
             "patch",
             "patch_regionprops",
             "wrfeat",
+            "pretrained_feats",
         ],
         default="wrfeat",
     )
@@ -1215,6 +1229,19 @@ def parse_train_args():
             "Inversely weight datasets by number of samples (to counter dataset size"
             " imbalance)"
         ),
+    )
+    parser.add_argument(
+        "--pretrained_feats_model",
+        type=str,
+        default=None,
+        help="If mode is pretrained_feats, specify the model to use for feature extraction",
+    )
+    parser.add_argument(
+        "--pretrained_feats_mode",
+        type=str,
+        choices=["nearest_patch", "mean_patches"],
+        default=None,
+        help="If mode is pretrained_feats, specify the mode to use for feature extraction",
     )
 
     args, unknown_args = parser.parse_known_args()
