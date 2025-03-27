@@ -1,7 +1,7 @@
 import logging
 import os
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -141,6 +141,13 @@ class PretrainedFeatureExtractorConfig:
         except Exception as e:
             raise ValueError(f"Invalid device: {self.device}") from e
 
+    def to_dict(self):
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, config_dict):
+        return cls(**config_dict)
+    
 
 class FeatureExtractor(ABC):
     model_name = None
@@ -410,27 +417,27 @@ class FeatureExtractor(ABC):
         return self._find_bbox_cells(regions, patch_height, patch_width)
     
     def _debug_show_patches(self, embeddings, masks, coords, patch_idxs):
-            import napari
-            v = napari.Viewer()
-            # v.add_labels(masks)
-            e = embeddings.detach().cpu().numpy().swapaxes(1, 2).reshape(-1, self.hidden_state_size, self.final_grid_size, self.final_grid_size).swapaxes(0, 1)
-            v.add_image(
-                e,
-                name="Embeddings",
-            )
-            # add red points at patch indices for the relevant frame
-            points = np.zeros((len(patch_idxs) * self.hidden_state_size, 3))
-            for i, (t, y, x) in enumerate(patch_idxs):
-                point = np.array([t, y, x])
-                points[i * self.hidden_state_size:(i + 1) * self.hidden_state_size] = np.tile(point, (self.hidden_state_size, 1))
-            
-            v.add_points(points, size=1, face_color='red', name='Patch Indices')
-    
-            from skimage.transform import resize
-            masks_resized = resize(masks[0], (self.final_grid_size, self.final_grid_size), anti_aliasing=False, order=0, preserve_range=True)
-            v.add_labels(masks_resized)
-            
-            napari.run()
+        import napari
+        v = napari.Viewer()
+        # v.add_labels(masks)
+        e = embeddings.detach().cpu().numpy().swapaxes(1, 2).reshape(-1, self.hidden_state_size, self.final_grid_size, self.final_grid_size).swapaxes(0, 1)
+        v.add_image(
+            e,
+            name="Embeddings",
+        )
+        # add red points at patch indices for the relevant frame
+        points = np.zeros((len(patch_idxs) * self.hidden_state_size, 3))
+        for i, (t, y, x) in enumerate(patch_idxs):
+            point = np.array([t, y, x])
+            points[i * self.hidden_state_size:(i + 1) * self.hidden_state_size] = np.tile(point, (self.hidden_state_size, 1))
+        
+        v.add_points(points, size=1, face_color='red', name='Patch Indices')
+
+        from skimage.transform import resize
+        masks_resized = resize(masks[0], (self.final_grid_size, self.final_grid_size), anti_aliasing=False, order=0, preserve_range=True)
+        v.add_labels(masks_resized)
+        
+        napari.run()
             
     def _nearest_patches(self, coords, masks=None):
         """Finds the nearest patches to the detections in the embedding."""
@@ -449,7 +456,7 @@ class FeatureExtractor(ABC):
         
         # t = coords[0][0]
         # if t > 80:
-            # self._debug_show_patches(embeddings, masks, coords, patch_idxs)
+        #    self._debug_show_patches(embeddings, masks, coords, patch_idxs)
 
         # logger.debug(f"Embeddings shape: {embeddings.shape}")
         embeddings_dict = {t: embeddings[t] for t in unique_timepoints}

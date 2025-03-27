@@ -6,7 +6,7 @@ import logging
 import pickle
 from collections.abc import Iterable
 from copy import deepcopy
-from pathlib import Path
+from pathlib import Path, WindowsPath
 from timeit import default_timer
 
 import numpy as np
@@ -20,6 +20,8 @@ from torch.utils.data import (
     DistributedSampler,
 )
 
+from trackastra.data.pretrained_features import PretrainedFeatureExtractorConfig
+
 from .data import CTCData
 
 logger = logging.getLogger(__name__)
@@ -32,10 +34,13 @@ def cache_class(cachedir=None):
     def make_hashable(obj):
         if isinstance(obj, tuple | list):
             return tuple(make_hashable(e) for e in obj)
-        elif isinstance(obj, Path):
+        elif isinstance(obj, Path | WindowsPath):
             return obj.as_posix()
         elif isinstance(obj, dict):
             return tuple(sorted((k, make_hashable(v)) for k, v in obj.items()))
+        elif isinstance(obj, PretrainedFeatureExtractorConfig):
+            cfg_dict = obj.to_dict()
+            return make_hashable(cfg_dict)
         else:
             return obj
 
@@ -60,9 +65,15 @@ def cache_class(cachedir=None):
             if cache_file.exists():
                 logger.info(f"Loading cached dataset from {cache_file}")
                 with open(cache_file, "rb") as f:
-                    return pickle.load(f)
+                    c = pickle.load(f)
+                    c.pretrained_config = PretrainedFeatureExtractorConfig.from_dict(
+                        c.pretrained_config
+                    )
+                    return c
             else:
                 c = CTCData(*args, **kwargs)
+                c.pretrained_config = c.pretrained_config.to_dict()
+                c.feature_extractor = None
                 logger.info(f"Saving cached dataset to {cache_file}")
                 pickle.dump(c, open(cache_file, "wb"))
             return c

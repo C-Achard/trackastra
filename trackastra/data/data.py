@@ -2,7 +2,7 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 from timeit import default_timer
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import joblib
 import lz4.frame
@@ -45,6 +45,7 @@ from trackastra.utils import blockwise_sum, normalize
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.INFO)
 logger.setLevel(logging.DEBUG)  # FIXME go back to INFO for release
+
 
 def _filter_track_df(df, start_frame, end_frame, downscale):
     """Only keep tracklets that are present in the given time interval."""
@@ -123,7 +124,7 @@ def debug_function(f):
 class CTCData(Dataset):
     """Cell Tracking Challenge data loader."""
     # Amount of feature per mode per dimension
-    FEATURES_DIMENSIONS = {
+    FEATURES_DIMENSIONS: ClassVar = {
         "wrfeat": {
             2: 7,
             3: 12,
@@ -150,6 +151,7 @@ class CTCData(Dataset):
         }
         # "pretrained_feats" -> defined by PretrainedFeatureExtractorConfig.feat_dim
     }
+
     def __init__(
         self,
         root: str = "",
@@ -178,36 +180,35 @@ class CTCData(Dataset):
         pretrained_backbone_config: PretrainedFeatureExtractorConfig | None = None,
         **kwargs,
     ) -> None:
-        """
-        Args:
-            root (str):
-                Folder containing the CTC TRA folder.
-            ndim (int):
-                Number of dimensions of the data. Defaults to 2d
-                (if ndim=3 and data is two dimensional, it will be cast to 3D)
-            detection_folders:
-                List of relative paths to folder with detections.
-                Defaults to ["TRA"], which uses the ground truth detections.
-            window_size (int):
-                Window size for transformer.
-            slice_pct (tuple):
-                Slice the dataset by percentages (from, to).
-            augment (int):
-                if 0, no data augmentation. if > 0, defines level of data augmentation.
-            features (str):
-                Types of features to use.
-            sanity_dist (bool):
-                Use euclidian distance instead of the association matrix as a target.
-            crop_size (tuple):
-                Size of the crops to use for augmentation. If None, no cropping is used.
-            return_dense (bool):
-                Return dense masks and images in the data samples.
-            compress (bool):
-                Compress elements/remove img if not needed to save memory for large datasets
-            pretrained_backbone_config (PretrainedFeatureExtractorConfig):
-                Configuration for the pretrained backbone.
-                If mode is set to "pretrained_feats", this configuration is used to extract features.
-                Ignored otherwise.
+        """Args:
+        root (str):
+            Folder containing the CTC TRA folder.
+        ndim (int):
+            Number of dimensions of the data. Defaults to 2d
+            (if ndim=3 and data is two dimensional, it will be cast to 3D)
+        detection_folders:
+            List of relative paths to folder with detections.
+            Defaults to ["TRA"], which uses the ground truth detections.
+        window_size (int):
+            Window size for transformer.
+        slice_pct (tuple):
+            Slice the dataset by percentages (from, to).
+        augment (int):
+            if 0, no data augmentation. if > 0, defines level of data augmentation.
+        features (str):
+            Types of features to use.
+        sanity_dist (bool):
+            Use euclidian distance instead of the association matrix as a target.
+        crop_size (tuple):
+            Size of the crops to use for augmentation. If None, no cropping is used.
+        return_dense (bool):
+            Return dense masks and images in the data samples.
+        compress (bool):
+            Compress elements/remove img if not needed to save memory for large datasets
+        pretrained_backbone_config (PretrainedFeatureExtractorConfig):
+            Configuration for the pretrained backbone.
+            If mode is set to "pretrained_feats", this configuration is used to extract features.
+            Ignored otherwise.
         """
         super().__init__()
 
@@ -329,7 +330,13 @@ class CTCData(Dataset):
     
     @pretrained_config.setter
     def pretrained_config(self, config: PretrainedFeatureExtractorConfig):
-        self.FEATURES_DIMENSIONS["pretrained_feats"] = config.feat_dim
+        try:
+            self.FEATURES_DIMENSIONS["pretrained_feats"] = config.feat_dim
+        except AttributeError as e:
+            if isinstance(config, dict):
+                self.FEATURES_DIMENSIONS["pretrained_feats"] = config["feat_dim"]
+            else:
+                raise e
         self._pretrained_config = config
     
     @staticmethod
@@ -1325,10 +1332,11 @@ class CTCData(Dataset):
         if self.ndim == 3:
             raise ValueError("Pretrained model feature extraction is not implemented for 3D data")
         img_shape = self.imgs.shape[-2:]  # FIXME may not be consistent across all folders when training
+        img_folder_name = str(self.root).replace("/", "_").replace("\\", "_").replace(" ", "_")
         self.feature_extractor = FeatureExtractor.from_model_name(
             self.pretrained_config.model_name,
             img_shape, 
-            save_path=self.pretrained_config.save_path / "embeddings",
+            save_path=self.pretrained_config.save_path / f"{img_folder_name}-embeddings",
             mode=self.pretrained_config.mode,
             device=self.pretrained_config.device
         )

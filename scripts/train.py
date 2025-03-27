@@ -36,6 +36,10 @@ from trackastra.data import (
     CTCData,
     collate_sequence_padding,
 )
+from trackastra.data.pretrained_features import (
+    AVAILABLE_PRETRAINED_BACKBONES,
+    PretrainedFeatureExtractorConfig,
+)
 from trackastra.model import TrackingTransformer
 from trackastra.utils import (
     blockwise_causal_norm,
@@ -48,7 +52,8 @@ from trackastra.utils import (
     str2bool,
 )
 
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -804,13 +809,27 @@ def train(args):
         
     pretrained_config = None
     if args.features == "pretrained_feats":
-        from trackastra.data.pretrained_features import PretrainedFeatureExtractorConfig
+        if args.pretrained_feats_model is None:
+            raise ValueError(
+                "Pretrained model must be defined if pretrained features are in use."
+                f"Available models: {AVAILABLE_PRETRAINED_BACKBONES.keys()}"
+            )
+        if args.pretrained_feats_model not in AVAILABLE_PRETRAINED_BACKBONES:
+            raise ValueError(
+                f"Unknown pretrained model {args.pretrained_feats_model}, available: {AVAILABLE_PRETRAINED_BACKBONES.keys()}"
+            )
+        if args.pretrained_feats_mode is None:
+            raise ValueError(
+                "Pretrained mode must be defined if pretrained features are in use."
+            )
+        emb_save_path = None if args.cachedir is None else Path(args.cachedir).resolve()
+        if not emb_save_path.exists():
+            emb_save_path.mkdir(parents=False, exist_ok=True)
         pretrained_config = PretrainedFeatureExtractorConfig(
             model_name=args.pretrained_feats_model,
             mode=args.pretrained_feats_mode,
-            save_path=None if args.cachedir is None else Path(args.cachedir).resolve() / "embeddings",
+            save_path=emb_save_path,
         )
-
 
     n_gpus = torch.cuda.device_count() if args.distributed else 1
     if args.preallocate:
@@ -915,7 +934,7 @@ def train(args):
     datamodule = BalancedDataModule(
         input_train=args.input_train,
         input_val=args.input_val,
-        cachedir=args.cachedir,
+        cachedir=args.cachedir if args.cache else None,
         augment=args.augment,
         distributed=args.distributed,
         dataset_kwargs=dataset_kwargs,
@@ -963,9 +982,11 @@ def train(args):
         else:
             model = TrackingTransformer.from_folder(fpath, args=args)
     else:
-        # feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12 # FIXME
-        feat_dim = CTCData.get_feat_dim(args.features, args.ndim)
-        logger.debug(f"FEAT DIM : {feat_dim}")
+        # feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12 
+        if args.features == "pretrained_feats":  # TODO find a way to truly automate this
+            feat_dim = pretrained_config.feat_dim
+        else:
+            feat_dim = CTCData.get_feat_dim(args.features, args.ndim)
         model = TrackingTransformer(
             # coord_dim=datasets["train"].datasets[0].ndim,
             coord_dim=args.ndim,
@@ -1078,7 +1099,8 @@ def parse_train_args():
         "--config",
         is_config_file=True,
         help="config file path",
-        default="configs/vanvliet.yaml",
+        # default="configs/vanvliet.yaml",
+        default=str(Path("./scripts/example_config.yaml").resolve()),
     )
     parser.add_argument("-o", "--outdir", type=str, default="runs")
     parser.add_argument("--name", type=str, help="Name to append to timestamp")
@@ -1233,6 +1255,7 @@ def parse_train_args():
     parser.add_argument(
         "--pretrained_feats_model",
         type=str,
+        choices=list(AVAILABLE_PRETRAINED_BACKBONES.keys()),
         default=None,
         help="If mode is pretrained_feats, specify the model to use for feature extraction",
     )

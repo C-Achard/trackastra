@@ -419,7 +419,7 @@ def _transform_affine(k: str, v: np.ndarray, M: np.ndarray):
     elif k == "equivalent_diameter_area":
         # v = np.linalg.det(M) ** (1 / len(M)) * v
         v = np.abs(np.linalg.det(M)) ** (1 / len(M)) * v
-        # TODO check the bhavior of equivalent_diameter_area in 3D regionprops
+        # TODO check the behavior of equivalent_diameter_area in 3D regionprops
     elif k == "inertia_tensor":
         # v' = M * v  * M^T
         v = v.reshape(-1, ndim, ndim)        
