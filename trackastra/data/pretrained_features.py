@@ -202,6 +202,8 @@ class FeatureExtractor(ABC):
     
     @input_size.setter
     def input_size(self, value: int):
+        if value is None:
+            raise ValueError("Input size cannot be None.")
         self._input_size = value
         self._set_model_patch_size()
         
@@ -277,6 +279,8 @@ class FeatureExtractor(ABC):
         if missing:
             for ts, batches in tqdm(self._prepare_batches(images), total=len(images) // self.batch_size, desc="Computing embeddings"):
                 embeddings = self._run_model(batches)
+                if torch.any(embeddings.isnan()):
+                    raise RuntimeError("NaN values found in features.")
                 # logger.debug(f"Embeddings shape: {embeddings.shape}")
                 all_embeddings[ts] = embeddings
             self.embeddings = all_embeddings
@@ -300,7 +304,7 @@ class FeatureExtractor(ABC):
         window_masks = window["mask"]
         window_labels = window["labels"]
         
-        n_regions_per_frame, features = self._extract_embedding(window_masks, window_timepoints, window_labels, window_coords)
+        n_regions_per_frame, features = self.extract_embedding(window_masks, window_timepoints, window_labels, window_coords)
         
         for i in range(remaining or len(n_regions_per_frame)):
             # if computing remaining frames' embeddings, start from the end
@@ -310,18 +314,24 @@ class FeatureExtractor(ABC):
             all_frames_embeddings[frame_index] = features[:obj_per_frame]
             features = features[obj_per_frame:]
     
-    def _extract_embedding(self, masks, timepoints, labels, coords):
+    def extract_embedding(self, masks, timepoints, labels, coords):
+        if masks.shape[-2:] != self.orig_image_size:
+            # This should not be occur since each folder is loaded as a separate CTCData
+            logger.debug(f"Input shape change detected: {masks.shape[-2:]} from {self.orig_image_size}.")
+            self.orig_image_size = masks.shape[-2:]
         n_regions_per_frame = np.unique(timepoints, return_counts=True)[1]
         tot_regions = n_regions_per_frame.sum()
         coords_txy = np.concatenate((timepoints[:, None], coords), axis=-1)
         if coords_txy.shape[0] != tot_regions:
             raise RuntimeError(f"Number of coords ({coords_txy.shape[0]}) does not match the number of coordinates ({timepoints.shape[0]}).")
         features = self.forward(
-            coords=coords_txy,
             masks=masks,
+            coords=coords_txy,
             timepoints=timepoints,
             labels=labels,
         )
+        if torch.isnan(features).any():
+            raise RuntimeError("NaN values found in features.")
         if tot_regions != features.shape[0]:
             raise RuntimeError(f"Number of regions ({n_regions_per_frame}) does not match the number of embeddings ({features.shape[0]}).")
         return n_regions_per_frame, features
@@ -526,15 +536,22 @@ class FeatureExtractor(ABC):
         # load_path = self.save_path / f"{timepoint}_{self.model_name_path}_features.npy"
         if self.embeddings is None:
             load_path = self.save_path / f"{self.model_name_path}_features.npy"
-            features = np.load(load_path)
-            assert features is not None, f"Failed to load features from {load_path}"
-            # check feature shape consistency
-            if features.shape[1] != self.final_grid_size**2 or features.shape[2] != self.hidden_state_size:
-                logger.error(f"Saved embeddings found, but shape {features.shape} does not match expected shape {('n_frames', self.final_grid_size**2, self.hidden_state_size)}.")
-                logger.error("Embeddings will be recomputed.")
+            if load_path.exists():
+                features = np.load(load_path)
+                assert features is not None, f"Failed to load features from {load_path}"
+                if np.any(np.isnan(features)): 
+                    raise RuntimeError(f"NaN values found in features loaded from {load_path}.")
+                # check feature shape consistency
+                if features.shape[1] != self.final_grid_size**2 or features.shape[2] != self.hidden_state_size:
+                    logger.error(f"Saved embeddings found, but shape {features.shape} does not match expected shape {('n_frames', self.final_grid_size**2, self.hidden_state_size)}.")
+                    logger.error("Embeddings will be recomputed.")
+                    return None
+                self.embeddings = torch.tensor(features).to(self.device)
+                return self.embeddings
+            else:
                 return None
-            self.embeddings = torch.tensor(features).to(self.device)
-        return self.embeddings
+        else:
+            return self.embeddings
    
     def _check_existing_embeddings(self, n_images):
         """Checks if embeddings for the model already exist."""

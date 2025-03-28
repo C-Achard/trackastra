@@ -233,7 +233,7 @@ class WRPretrainedFeatures(WRFeatures):
         super().__init__(coords, labels, timepoints, features)
         
     @classmethod
-    def from_loaded_pretrained_features(
+    def from_pretrained_features(
         cls,
         img: np.ndarray,
         mask: np.ndarray,
@@ -260,7 +260,7 @@ class WRPretrainedFeatures(WRFeatures):
         labels = df["label"].values.astype(np.int32)
         coords = df[[f"centroid-{i}" for i in range(ndim)]].values.astype(np.float32)
 
-        _, features = feature_extractor._extract_embedding(mask, timepoints, labels, coords) 
+        _, features = feature_extractor.extract_embedding(mask, timepoints, labels, coords) 
         features = features.detach().cpu().numpy()
         feats_dict = OrderedDict(pretrained_feats=features)
         

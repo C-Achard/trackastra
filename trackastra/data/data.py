@@ -725,8 +725,6 @@ class CTCData(Dataset):
                     ]
                 )
 
-        assert len(self.gt_masks) == len(self.imgs)
-
         # Load each of the detection folders and create data samples with a sliding window
         windows = []
         self.properties_by_time = dict()
@@ -1109,6 +1107,8 @@ class CTCData(Dataset):
                         for im, mask in zip(self.imgs, self.gt_masks)
                     ]
                 )
+                if np.any(np.isnan(self.imgs)):
+                    raise ValueError("Compressed images contain NaN values")
 
         assert len(self.gt_masks) == len(self.imgs)
 
@@ -1158,13 +1158,19 @@ class CTCData(Dataset):
             # build features
             if self.features == "pretrained_feats":
                 self._setup_pretrained_feature_extractor()
-                self.feature_extractor.precompute_region_embeddings(self.imgs)
+                if np.all(self.imgs == 0):
+                    raise ValueError("Images are empty")
+                self.feature_extractor.precompute_region_embeddings(imgs)  # use NON_NORMALIZED images for pretrained features
+                # normalization is performed in the feature extractor
                 features = [
-                    wrfeat.WRPretrainedFeatures.from_loaded_pretrained_features(
+                    wrfeat.WRPretrainedFeatures.from_pretrained_features(
                         img=img[np.newaxis], mask=mask[np.newaxis], feature_extractor=self.feature_extractor, t_start=t
                     )
                     for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
                 ]
+                for wrf in features:
+                    if np.any(np.isnan(wrf.features_stacked)):
+                        raise ValueError("NaN in features")
             elif self.features == "wrfeat":
                 features = joblib.Parallel(n_jobs=8)(
                     joblib.delayed(wrfeat.WRFeatures.from_mask_img)(
@@ -1325,13 +1331,13 @@ class CTCData(Dataset):
 
             mask = torch.from_numpy(mask.astype(int)).long()
             res["mask"] = mask
-
+        
         return res
 
     def _setup_pretrained_feature_extractor(self):
         if self.ndim == 3:
             raise ValueError("Pretrained model feature extraction is not implemented for 3D data")
-        img_shape = self.imgs.shape[-2:]  # FIXME may not be consistent across all folders when training
+        img_shape = self.imgs.shape[-2:]  # initial guess, replaced later if shape changes
         img_folder_name = str(self.root).replace(".", "").replace("/", "_").replace("\\", "_").replace(" ", "_")
         self.feature_extractor = FeatureExtractor.from_model_name(
             self.pretrained_config.model_name,
