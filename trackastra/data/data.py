@@ -1332,7 +1332,7 @@ class CTCData(Dataset):
         if self.ndim == 3:
             raise ValueError("Pretrained model feature extraction is not implemented for 3D data")
         img_shape = self.imgs.shape[-2:]  # FIXME may not be consistent across all folders when training
-        img_folder_name = str(self.root).replace("/", "_").replace("\\", "_").replace(" ", "_")
+        img_folder_name = str(self.root).replace(".", "").replace("/", "_").replace("\\", "_").replace(" ", "_")
         self.feature_extractor = FeatureExtractor.from_model_name(
             self.pretrained_config.model_name,
             img_shape, 
