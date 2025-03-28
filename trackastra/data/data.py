@@ -1338,11 +1338,13 @@ class CTCData(Dataset):
         if self.ndim == 3:
             raise ValueError("Pretrained model feature extraction is not implemented for 3D data")
         img_shape = self.imgs.shape[-2:]  # initial guess, replaced later if shape changes
-        img_folder_name = str(self.root).replace(".", "").replace("/", "_").replace("\\", "_").replace(" ", "_")
+        # get with first three folders
+        img_folder_name = "_".join(self.root.parts[-3:]) if len(self.root.parts) >= 3 else "_".join(self.root.parts)
+        img_folder_name = str(img_folder_name).replace(".", "").replace("/", "_").replace("\\", "_").replace(" ", "_")
         self.feature_extractor = FeatureExtractor.from_model_name(
             self.pretrained_config.model_name,
             img_shape, 
-            save_path=self.pretrained_config.save_path / f"{img_folder_name}-embeddings",
+            save_path=self.pretrained_config.save_path / f"embeddings/{img_folder_name}",
             mode=self.pretrained_config.mode,
             device=self.pretrained_config.device
         )

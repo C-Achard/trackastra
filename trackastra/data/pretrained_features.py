@@ -179,7 +179,9 @@ class FeatureExtractor(ABC):
         # Data specs
         self.orig_image_size = image_size
         self.orig_n_channels = 1
-        self.do_rescale = True
+        # Batch options and preprocessing
+        self.percentile_norm = True
+        self.rescale_batches = False
         self.channel_first = True
         self.batch_return_type: Literal["list[np.ndarray]", "np.ndarray"] = "np.ndarray"
         # Parameters for embedding extraction
@@ -194,7 +196,7 @@ class FeatureExtractor(ABC):
             self.save_path = Path(self.save_path)
         
         if not self.save_path.exists():
-            self.save_path.mkdir(parents=False, exist_ok=True)
+            self.save_path.mkdir(parents=True, exist_ok=True)
     
     @property
     def input_size(self):
@@ -341,12 +343,14 @@ class FeatureExtractor(ABC):
         """Extracts embeddings from the model."""
         pass
     
-    def _rescale_batch(self, b):
+    def _normalize_batch(self, b):
         for i, im in enumerate(b):
             # b[i] = (im - im.min()) / (im.max() - im.min())
             p1, p99 = np.percentile(im, (1, 99.8))
             b[i] = (im - p1) / (p99 - p1)
             b[i] = np.clip(b[i], 0, 1)
+            if self.rescale_batches:
+                b[i] = b[i] * 255.0
         return b
     
     def _prepare_batches(self, images):
@@ -357,8 +361,8 @@ class FeatureExtractor(ABC):
             batch = np.expand_dims(images[i:end], axis=1)  # (B, C, H, W)
             
             # required by AutoImageProcessor (PIL Image needs [0, 1] range)
-            if self.do_rescale:
-                batch = self._rescale_batch(batch)  # TODO check if this is okay to do 
+            if self.percentile_norm:
+                batch = self._normalize_batch(batch)
             timepoints = range(i, end)
             if self.n_channels > 1:  # repeat channels if needed
                 if self.orig_n_channels > 1 and self.orig_n_channels != self.n_channels:
@@ -535,7 +539,7 @@ class FeatureExtractor(ABC):
         """Loads the features from disk."""
         # load_path = self.save_path / f"{timepoint}_{self.model_name_path}_features.npy"
         if self.embeddings is None:
-            load_path = self.save_path / f"{self.model_name_path}_features.npy"
+            load_path = self.save_path / f"embeddings/{self.model_name_path}_features.npy"
             if load_path.exists():
                 features = np.load(load_path)
                 assert features is not None, f"Failed to load features from {load_path}"
@@ -590,6 +594,7 @@ class HieraFeatures(FeatureExtractor):
         self.final_grid_size = 7 * self.input_mul  # 14x14 grid
         self.n_channels = 3
         self.hidden_state_size = 768
+        self.rescale_batches = False
 
         ##
         self.im_proc_kwargs["size"] = (self.input_size, self.input_size)
@@ -610,7 +615,7 @@ class HieraFeatures(FeatureExtractor):
 
     def _run_model(self, images) -> torch.Tensor:
         """Extracts embeddings from the model."""
-        images = self._rescale_batch(images)
+        images = self._normalize_batch(images)
         inputs = self.image_processor(images, **self.im_proc_kwargs).to(self.device)
         
         with torch.no_grad():
@@ -645,6 +650,7 @@ class DinoV2Features(FeatureExtractor):
         self.im_proc_kwargs["size"] = (self.input_size, self.input_size)
         ##
         self.model = AutoModel.from_pretrained(self.model_name)
+        self.rescale_batches = False
         # config = Dinov2Config.from_pretrained(self.model_name)
         # config.image_size = self.input_size
         
@@ -691,6 +697,7 @@ class SAMFeatures(FeatureExtractor):
         self.hidden_state_size = 256
         self.image_processor = SamProcessor.from_pretrained(self.model_name)
         self.model = SamModel.from_pretrained(self.model_name)
+        self.rescale_batches = False
         
         self.model.to(self.device)
         
@@ -728,6 +735,7 @@ class SAM2Features(FeatureExtractor):
         
         self.batch_return_type = "list[np.ndarray]"
         self.channel_first = False
+        self.rescale_batches = True
     
     def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
         """Extracts embeddings from the model."""
