@@ -22,6 +22,13 @@ from transformers import (
     SamProcessor,
 )
 
+MICRO_SAM_AVAILABLE = False
+try:
+    from micro_sam.util import get_sam_model as get_microsam_model
+    MICRO_SAM_AVAILABLE = True
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -30,6 +37,7 @@ HieraFeatures = None
 DinoV2Features = None
 SAMFeatures = None
 SAM2Features = None
+MicroSAMFeatures = None
 
 # Updated with actual class after each definition
 # See register_backbone decorator
@@ -47,6 +55,8 @@ PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.1
     "facebook/sam-vit-base",  # 256
     "facebook/sam2-hiera-large",  # 256
     "facebook/sam2.1-hiera-base-plus",  # 256
+    "microsam/vit_b_lm",
+    "microsam/vit_l_lm",
 ]
 
 
@@ -539,7 +549,7 @@ class FeatureExtractor(ABC):
         """Loads the features from disk."""
         # load_path = self.save_path / f"{timepoint}_{self.model_name_path}_features.npy"
         if self.embeddings is None:
-            load_path = self.save_path / f"embeddings/{self.model_name_path}_features.npy"
+            load_path = self.save_path / f"{self.model_name_path}_features.npy"
             if load_path.exists():
                 features = np.load(load_path)
                 assert features is not None, f"Failed to load features from {load_path}"
@@ -551,8 +561,10 @@ class FeatureExtractor(ABC):
                     logger.error("Embeddings will be recomputed.")
                     return None
                 self.embeddings = torch.tensor(features).to(self.device)
+                logger.info("Saved embeddings loaded.")
                 return self.embeddings
             else:
+                logger.info(f"No saved embeddings found at {load_path}. Features will be computed.")
                 return None
         else:
             return self.embeddings
@@ -670,7 +682,6 @@ class DinoV2Features(FeatureExtractor):
         # this way we get only the patch embeddings
         # which are compatible with finding the relevant patches directly
         # in the rest of the code
-        self.final_grid_size = np.sqrt(504)
         return outputs.last_hidden_state[:, 1:, :]
     
 
@@ -746,5 +757,48 @@ class SAM2Features(FeatureExtractor):
         B, N, H, W = features.shape
         return features.permute(0, 2, 3, 1).reshape(B, H * W, N)  # (B, grid_size**2, hidden_state_size)
     
+    
+@register_backbone("microsam/vit_b_lm", 256)
+@register_backbone("microsam/vit_l_lm", 256)
+class MicroSAMFeatures(FeatureExtractor):
+    model_name = "microsam/vit_b_lm"
+    
+    def __init__(
+        self, 
+        image_size: tuple[int, int],
+        save_path: str | Path,
+        batch_size: int = 4,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        mode: Literal[
+            # "exact_patch",  # Uses the image patch centered on the detection for embedding
+            "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
+            "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
+            ] = "nearest_patch",
+        ):
+        if not MICRO_SAM_AVAILABLE:
+            raise ImportError("microSAM is not available. Please install it following the instructions in the documentation.")
+        super().__init__(image_size, save_path, batch_size, device, mode)
+        self.input_size = 1024
+        self.final_grid_size = 64
+        self.n_channels = 3
+        self.hidden_state_size = 256
+        model_name = self.model_name.split("/")[-1]
+        self.model = get_microsam_model(model_name, device=self.device)
+        
+        self.batch_return_type = "list[np.ndarray]"
+        self.channel_first = False
+        self.rescale_batches = True
+        
+    def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
+        """Extracts embeddings from the model."""
+        embeddings = []
+        for image in images:
+            self.model.set_image(image)
+            embedding = self.model.get_image_embedding()  # (1, hidden_state_size, grid_size, grid_size)
+            B, N, H, W = embedding.shape
+            embedding = embedding.permute(0, 2, 3, 1).reshape(B, H * W, N)
+            embeddings.append(embedding)
+        return torch.stack(embeddings).squeeze()  # (B, grid_size**2, hidden_state_size)
+        
 
 FeatureExtractor._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
