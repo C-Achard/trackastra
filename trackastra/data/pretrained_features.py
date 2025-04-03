@@ -8,6 +8,7 @@ from typing import Literal
 import joblib
 import numpy as np
 import torch
+import torch.nn.functional as F
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from skimage.measure import regionprops
 from tqdm import tqdm
@@ -627,7 +628,7 @@ class HieraFeatures(FeatureExtractor):
 
     def _run_model(self, images) -> torch.Tensor:
         """Extracts embeddings from the model."""
-        images = self._normalize_batch(images)
+        # images = self._normalize_batch(images)
         inputs = self.image_processor(images, **self.im_proc_kwargs).to(self.device)
         
         with torch.no_grad():
@@ -742,18 +743,45 @@ class SAM2Features(FeatureExtractor):
         self.final_grid_size = 64  # 64x64 grid
         self.n_channels = 3   
         self.hidden_state_size = 256        
-        self.model = SAM2ImagePredictor.from_pretrained(self.model_name, device=self.device)
+        self.model = SAM2ImagePredictor.from_pretrained(self.model_name, device=self.device).model
         
         self.batch_return_type = "list[np.ndarray]"
-        self.channel_first = False
-        self.rescale_batches = True
-    
+        self.channel_first = True
+        self.rescale_batches = False
+        
+        self._bb_feat_sizes = [
+            (256, 256),
+            (128, 128),
+            (64, 64),
+        ]
+        if self.rescale_batches:
+            print("Rescaling batches to [0, 255] range.")
+        
+    @torch.no_grad()
     def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
         """Extracts embeddings from the model."""
-        with torch.inference_mode(), torch.autocast(self.device, dtype=torch.bfloat16):
-            self.model.set_image_batch(images)
-            
-        features = self.model._features['image_embed']  # (B, hidden_state_size, grid_size, grid_size)
+        with torch.autocast(device_type=self.device):
+            images_ten = torch.stack([torch.tensor(image) for image in images]).to(self.device)
+            logger.debug(f"Image dtype: {images_ten.dtype}")
+            logger.debug(f"Image shape: {images_ten.shape}")
+            logger.debug(f"Image min :  {images_ten.min()}, max: {images_ten.max()}")
+            images_ten = F.interpolate(images_ten, size=(self.input_size, self.input_size), mode="bilinear", align_corners=False)
+            from torchvision.transforms.functional import resize
+            images_ten = resize(images_ten, size=(self.input_size, self.input_size))
+            # images_ten = normalize(images_ten, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            out = self.model.image_encoder(images_ten)
+            _, vision_feats, _, _ = self.model._prepare_backbone_features(out)
+            # Add no_mem_embed, which is added to the lowest rest feat. map during training on videos
+            if self.model.directly_add_no_mem_embed:
+                vision_feats[-1] = vision_feats[-1] + self.model.no_mem_embed
+
+            feats = [
+                feat.permute(1, 2, 0).view(feat.shape[1], -1, *feat_size)
+                for feat, feat_size in zip(vision_feats[::-1], self._bb_feat_sizes[::-1])
+            ][::-1]
+            features = feats[-1]
+        # features = self.model.set_image_batch(images)
+        # features = self.model._features['image_embed']
         B, N, H, W = features.shape
         return features.permute(0, 2, 3, 1).reshape(B, H * W, N)  # (B, grid_size**2, hidden_state_size)
     
@@ -787,18 +815,22 @@ class MicroSAMFeatures(FeatureExtractor):
         
         self.batch_return_type = "list[np.ndarray]"
         self.channel_first = False
-        self.rescale_batches = True
+        self.rescale_batches = False
         
     def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
         """Extracts embeddings from the model."""
         embeddings = []
         for image in images:
+            logger.debug(f"Image shape: {image.shape}")
             self.model.set_image(image)
             embedding = self.model.get_image_embedding()  # (1, hidden_state_size, grid_size, grid_size)
             B, N, H, W = embedding.shape
             embedding = embedding.permute(0, 2, 3, 1).reshape(B, H * W, N)
             embeddings.append(embedding)
-        return torch.stack(embeddings).squeeze()  # (B, grid_size**2, hidden_state_size)
-        
+        out = torch.stack(embeddings).squeeze()  # (B, grid_size**2, hidden_state_size)
+        if len(out.shape) == 2:
+            out = out.unsqueeze(0)
+        return out
+            
 
 FeatureExtractor._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
