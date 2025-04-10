@@ -66,14 +66,16 @@ def cache_class(cachedir=None):
                 logger.info(f"Loading cached dataset from {cache_file}")
                 with open(cache_file, "rb") as f:
                     c = pickle.load(f)
-                    c.pretrained_config = PretrainedFeatureExtractorConfig.from_dict(
-                        c.pretrained_config
-                    )
+                    if c.pretrained_config is not None:
+                        c.pretrained_config = PretrainedFeatureExtractorConfig.from_dict(
+                            c.pretrained_config
+                        )
                     return c
             else:
                 c = CTCData(*args, **kwargs)
-                c.pretrained_config = c.pretrained_config.to_dict()
-                c.feature_extractor = None
+                if c.pretrained_config is not None:
+                    c.pretrained_config = c.pretrained_config.to_dict()
+                    c.feature_extractor = None
                 logger.info(f"Saving cached dataset to {cache_file}")
                 pickle.dump(c, open(cache_file, "wb"))
             return c
