@@ -760,14 +760,14 @@ class SAM2Features(FeatureExtractor):
     @torch.no_grad()
     def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
         """Extracts embeddings from the model."""
-        with torch.autocast(device_type=self.device):
+        with torch.autocast(device_type=self.device), torch.inference_mode():
             images_ten = torch.stack([torch.tensor(image) for image in images]).to(self.device)
-            logger.debug(f"Image dtype: {images_ten.dtype}")
-            logger.debug(f"Image shape: {images_ten.shape}")
-            logger.debug(f"Image min :  {images_ten.min()}, max: {images_ten.max()}")
+            # logger.debug(f"Image dtype: {images_ten.dtype}")
+            # logger.debug(f"Image shape: {images_ten.shape}")
+            # logger.debug(f"Image min :  {images_ten.min()}, max: {images_ten.max()}")
             images_ten = F.interpolate(images_ten, size=(self.input_size, self.input_size), mode="bilinear", align_corners=False)
-            from torchvision.transforms.functional import resize
-            images_ten = resize(images_ten, size=(self.input_size, self.input_size))
+            # from torchvision.transforms.functional import resize
+            # images_ten = resize(images_ten, size=(self.input_size, self.input_size))
             # images_ten = normalize(images_ten, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             out = self.model.image_encoder(images_ten)
             _, vision_feats, _, _ = self.model._prepare_backbone_features(out)
