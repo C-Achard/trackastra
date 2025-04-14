@@ -187,6 +187,7 @@ class WrappedLightningModule(pl.LightningModule):
         tracking_frequency: int = -1,  # log TRA metrics every that epochs
         batch_val_tb_idx: int = 0,  # the batch index to visualize in tensorboard
         div_upweight: float = 20,
+        per_param_clipping: bool = False,
     ):
         super().__init__()
 
@@ -205,6 +206,7 @@ class WrappedLightningModule(pl.LightningModule):
         self.warmup_epochs = warmup_epochs
         self.max_epochs = max_epochs
         self.div_upweight = div_upweight
+        self.per_param_clipping = per_param_clipping
 
     def _common_step(self, batch, eps=torch.finfo(torch.float32).eps):
         feats = batch["features"]
@@ -218,17 +220,17 @@ class WrappedLightningModule(pl.LightningModule):
         A_pred = self.model(coords, feats, padding_mask=padding_mask)
         
         # remove inf values that might happen due to float16 numerics
-        # A_pred.clamp_(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
-        # above call interferes with backward as it is an inplace operation
-        A_pred = A_pred.clamp(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
+        A_pred.clamp_(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
+        # above call might interfere with backward as it is an inplace operation
+        # A_pred = A_pred.clamp(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
 
         mask_invalid = torch.logical_or(
             padding_mask.unsqueeze(1), padding_mask.unsqueeze(2)
         )
 
-        # A_pred[mask_invalid] = 0
-        # above call interferes with backward as it is an inplace operation in "linear" causal norm
-        A_pred = A_pred.masked_fill(mask_invalid, 0)
+        A_pred[mask_invalid] = 0
+        # above call might interfere with backward as it is an inplace operation in "linear" causal norm
+        # A_pred = A_pred.masked_fill(mask_invalid, 0)
         loss = self.criterion(A_pred, A)
             
         if self.causal_norm != "none":
@@ -241,7 +243,7 @@ class WrappedLightningModule(pl.LightningModule):
                     for _A, _t, _m in zip(A_pred, timepoints, mask_invalid)
                 ]
             )
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.amp.autocast(enabled=False, device_type=str(self.device)):
                 if len(A) > 0:
                     # debug
                     if torch.any(torch.isnan(A_pred_soft)):
@@ -339,9 +341,15 @@ class WrappedLightningModule(pl.LightningModule):
         )
 
     def on_before_optimizer_step(self, optimizer):
-        from lightning.pytorch.utilities import grad_norm
+        # self.trainer.precision_plugin.scaler.unscale_(optimizer)
+        from torch.nn.utils import clip_grad_norm_
+        if self.per_param_clipping:
+            for param in self.model.parameters():
+                if param.grad is not None:
+                    clip_grad_norm_(param, max_norm=1.0)
         # Compute the 2-norm for each layer
         # If using mixed precision, the gradients are already unscaled here
+        from lightning.pytorch.utilities import grad_norm
         norms = grad_norm(self.model, norm_type=2)
         self.log_dict(norms)
         
@@ -886,6 +894,7 @@ def train(args):
             tracking_frequency=args.tracking_frequency,
             batch_val_tb_idx=0,
             div_upweight=args.div_upweight,
+            per_param_clipping=args.clip_grad_per_param,
         )
         dummy_model_lightning.to(device)
         preallocate_memory(
@@ -1024,6 +1033,7 @@ def train(args):
         tracking_frequency=args.tracking_frequency,
         batch_val_tb_idx=batch_val_tb_idx,
         div_upweight=args.div_upweight,
+        per_param_clipping=args.clip_grad_per_param,
     )
     # Compiling does not work!
     # model_lightning = torch.compile(model_lightning)
@@ -1044,6 +1054,7 @@ def train(args):
                 tracking_frequency=args.tracking_frequency,
                 batch_val_tb_idx=batch_val_tb_idx,
                 div_upweight=args.div_upweight,
+                per_param_clipping=args.clip_grad_per_param,
             )
         else:
             logging.warning(f"No checkpoint found in {logdir}")
@@ -1273,6 +1284,14 @@ def parse_train_args():
         choices=["nearest_patch", "mean_patches"],
         default=None,
         help="If mode is pretrained_feats, specify the mode to use for feature extraction",
+    )
+    
+    # Additional debug args
+    parser.add_argument(
+        "--clip_grad_per_param",
+        type=str2bool,
+        default=False,
+        help="Clip gradients per parameter in addition to global norm clipping",
     )
 
     args, unknown_args = parser.parse_known_args()
