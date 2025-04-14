@@ -821,7 +821,7 @@ class MicroSAMFeatures(FeatureExtractor):
         """Extracts embeddings from the model."""
         embeddings = []
         for image in images:
-            logger.debug(f"Image shape: {image.shape}")
+            # logger.debug(f"Image shape: {image.shape}")
             self.model.set_image(image)
             embedding = self.model.get_image_embedding()  # (1, hidden_state_size, grid_size, grid_size)
             B, N, H, W = embedding.shape

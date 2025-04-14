@@ -751,6 +751,12 @@ def _init_wandb(project, name, config):
     _ = wandb.init(project=project, name=name, config=config)
 
 
+@rank_zero_only
+def create_wandb_logger(run_name, wandb_project):
+    wandb_logger = WandbLogger(name=run_name, project=wandb_project)
+    return wandb_logger
+
+
 def train(args):
     args.seed = seed(args.seed)
     if args.model is None:
@@ -789,7 +795,9 @@ def train(args):
         if args.logger == "tensorboard":
             train_logger = TensorBoardLogger(logdir, name="tb")
         elif args.logger == "wandb":
-            train_logger = WandbLogger(name=run_name, project=args.wandb_project)
+            # train_logger = WandbLogger(name=run_name, project=args.wandb_project)
+            train_logger = create_wandb_logger(run_name, args.wandb_project)
+            train_logger.log_hyperparams(training_args)
 
             # init here to get an alert on job failure even before training
             _init_wandb(project=args.wandb_project, name=run_name, config=vars(args))
@@ -1057,7 +1065,7 @@ def train(args):
         profiler = None
 
     trainer = pl.Trainer(
-        accelerator="cuda" if torch.cuda.is_available() else 'cpu',
+        accelerator="auto",
         strategy=strategy,
         devices=n_gpus,
         precision="16-mixed" if args.mixedp else 32,
