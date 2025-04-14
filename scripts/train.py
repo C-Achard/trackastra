@@ -803,9 +803,9 @@ def train(args):
         if args.logger == "tensorboard":
             train_logger = TensorBoardLogger(logdir, name="tb")
         elif args.logger == "wandb":
-            # train_logger = WandbLogger(name=run_name, project=args.wandb_project)
-            train_logger = create_wandb_logger(run_name, args.wandb_project)
-            train_logger.log_hyperparams(training_args)
+            train_logger = WandbLogger(name=run_name, project=args.wandb_project)
+            # train_logger = create_wandb_logger(run_name, args.wandb_project)
+            # train_logger.log_hyperparams(training_args)
 
             # init here to get an alert on job failure even before training
             _init_wandb(project=args.wandb_project, name=run_name, config=vars(args))
