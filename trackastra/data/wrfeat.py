@@ -667,42 +667,56 @@ class AugmentationFactory:
 def get_features(
     detections: np.ndarray,
     imgs: np.ndarray | None = None,
-    features: Literal["none", "wrfeat"] = "wrfeat",
+    features: Literal["none", "wrfeat", "pretrained_feats"] = "wrfeat",
     ndim: int = 2,
     n_workers=0,
     progbar_class=tqdm,
+    feature_extractor: FeatureExtractor | None = None,
 ) -> list[WRFeatures]:
     """Extracts features from detections and images."""
     detections = _check_dimensions(detections, ndim)
     imgs = _check_dimensions(imgs, ndim)
     logger.info(f"Extracting features from {len(detections)} detections")
-    if n_workers > 0:
-        features = joblib.Parallel(n_jobs=n_workers)(
-            joblib.delayed(WRFeatures.from_mask_img)(
-                # New axis for time component
-                mask=mask[np.newaxis, ...],
-                img=img[np.newaxis, ...],
-                t_start=t,
+    if features in ["none", "wrfeat"]:
+        if n_workers > 0:
+            features = joblib.Parallel(n_jobs=n_workers)(
+                joblib.delayed(WRFeatures.from_mask_img)(
+                    # New axis for time component
+                    mask=mask[np.newaxis, ...],
+                    img=img[np.newaxis, ...],
+                    t_start=t,
+                )
+                for t, (mask, img) in progbar_class(
+                    enumerate(zip(detections, imgs)),
+                    total=len(imgs),
+                    desc="Extracting features",
+                )
             )
-            for t, (mask, img) in progbar_class(
-                enumerate(zip(detections, imgs)),
-                total=len(imgs),
-                desc="Extracting features",
+        else:
+            logger.info("Using single process for feature extraction")
+            features = tuple(
+                WRFeatures.from_mask_img(
+                    mask=mask[np.newaxis, ...],
+                    img=img[np.newaxis, ...],
+                    t_start=t,
+                )
+                for t, (mask, img) in progbar_class(
+                    enumerate(zip(detections, imgs)),
+                    total=len(imgs),
+                    desc="Extracting features",
+                )
             )
-        )
+    elif features == "pretrained_feats":
+        feature_extractor.precompute_region_embeddings(imgs)
+        features = [
+                    WRPretrainedFeatures.from_pretrained_features(
+                        img=img[np.newaxis], mask=mask[np.newaxis], feature_extractor=feature_extractor, t_start=t
+                    )
+                    for t, (mask, img) in enumerate(zip(detections, imgs))
+                ]
     else:
-        logger.info("Using single process for feature extraction")
-        features = tuple(
-            WRFeatures.from_mask_img(
-                mask=mask[np.newaxis, ...],
-                img=img[np.newaxis, ...],
-                t_start=t,
-            )
-            for t, (mask, img) in progbar_class(
-                enumerate(zip(detections, imgs)),
-                total=len(imgs),
-                desc="Extracting features",
-            )
+        raise ValueError(
+            f"Unknown feature extraction method {features}. Available: 'none', 'wrfeat' or 'pretrained_feats'."
         )
 
     return features
