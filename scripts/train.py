@@ -222,10 +222,12 @@ class WrappedLightningModule(pl.LightningModule):
         if torch.any(torch.isnan(feats)):
             nan_dims = torch.any(torch.isnan(feats), dim=-1)
             raise ValueError("NaN in features in dimensions: ", nan_dims)
+        elif torch.any(torch.all(feats == 0, dim=-1)):
+            raise ValueError("Emtpy features found")
         if torch.any(torch.isnan(coords)):
             raise ValueError("NaN in coords")
         
-        # torch.autograd.set_detect_anomaly(True)
+        torch.autograd.set_detect_anomaly(True)
         A_pred = self.model(coords, feats, padding_mask=padding_mask)
         
         # remove inf values that might happen due to float16 numerics

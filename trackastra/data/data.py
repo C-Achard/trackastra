@@ -1298,17 +1298,13 @@ class CTCData(Dataset):
         if self.augmenter is not None:
             feat = self.augmenter(feat)
         
-        for k, f in feat.features.items():
-            if np.any(np.isnan(f)):
-                raise ValueError(f"NaN in {k} features of shape {f.shape}")
-            
         coords0 = np.concatenate((feat.timepoints[:, None], feat.coords), axis=-1)
         coords0 = torch.from_numpy(coords0).float()
         assoc_matrix = torch.from_numpy(assoc_matrix.astype(np.float32))
         features = torch.from_numpy(feat.features_stacked).float()
         labels = torch.from_numpy(feat.labels).long()
         timepoints = torch.from_numpy(feat.timepoints).long()
-
+    
         if self.max_tokens and len(timepoints) > self.max_tokens:
             time_incs = np.where(timepoints - np.roll(timepoints, 1))[0]
             n_elems = time_incs[np.searchsorted(time_incs, self.max_tokens) - 1]
@@ -1342,6 +1338,11 @@ class CTCData(Dataset):
 
             mask = torch.from_numpy(mask.astype(int)).long()
             res["mask"] = mask
+        
+        if torch.any(torch.isnan(features)):
+            raise ValueError("NaN in features")
+        elif torch.any(torch.all(features == 0, dim=-1)):
+            raise ValueError("Empty features")
         
         return res
 

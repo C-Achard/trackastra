@@ -3,13 +3,14 @@ WindowedRegionFeatures (WRFeatures) is a class that holds regionprops features f
 """
 
 from __future__ import annotations
+
 import itertools
 import logging
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from functools import reduce
-from typing import ClassVar, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import joblib
 import numpy as np
@@ -123,13 +124,13 @@ class WRFeatures:
             raise KeyError(f"Key {key} not found in features")
 
     @classmethod
-    def concat(cls, feats: Sequence["WRFeatures"]) -> "WRFeatures":
+    def concat(cls, feats: Sequence[WRFeatures]) -> WRFeatures:
         """Concatenate multiple WRFeatures into a single one."""
         if len(feats) == 0:
             raise ValueError("Cannot concatenate empty list of features")
         return reduce(lambda x, y: x + y, feats)
 
-    def __add__(self, other: "WRFeatures") -> "WRFeatures":
+    def __add__(self, other: WRFeatures) -> WRFeatures:
         """Concatenate two WRFeatures."""
         if self.ndim != other.ndim:
             raise ValueError("Cannot concatenate features of different dimensions")
@@ -199,6 +200,7 @@ class WRFeatures:
             raise ValueError("NaNs found in features DataFrame")
 
         return df, coords, labels, timepoints, properties
+
     @classmethod
     def from_mask_img(
         cls,
@@ -240,7 +242,7 @@ class WRPretrainedFeatures(WRFeatures):
         labels: np.ndarray,
         timepoints: np.ndarray,
         features: OrderedDict[np.ndarray],
-        additional_properties: str = None
+        additional_properties: str | None = None
     ):
         super().__init__(coords, labels, timepoints, features)
         self.additional_properties = additional_properties
@@ -252,8 +254,8 @@ class WRPretrainedFeatures(WRFeatures):
         mask: np.ndarray,
         feature_extractor: FeatureExtractor,
         t_start: int = 0,
-        additional_properties: str = None,
-    ) -> 'WRPretrainedFeatures':
+        additional_properties: str | None = None,
+    ) -> WRPretrainedFeatures:
 
         ndim = img.ndim - 1
         if ndim not in (2, 3):
@@ -567,6 +569,11 @@ class WRRandomOffset(WRBaseAugmentation):
 
         offset = self._rng.uniform(*self.offset, features.coords.shape)
         coords = features.coords + offset
+        
+        if np.any(coords < 0):
+            # logger.warning("Negative coordinates after random offset")
+            coords = np.clip(coords, 0, None)
+        
         return WRFeatures(
             coords=coords,
             labels=features.labels,
@@ -591,6 +598,10 @@ class WRRandomMovement(WRBaseAugmentation):
         offset = (features.timepoints[:, None] - tmin) * base_offset[None]
         coords = features.coords + offset
         
+        if np.any(coords < 0):
+            # logger.warning("Negative coordinates after random movement")
+            coords = np.clip(coords, 0, None)
+        
         return WRFeatures(
             coords=coords,
             labels=features.labels,
@@ -606,6 +617,15 @@ class WRAugmentationPipeline:
     def __call__(self, feats: WRFeatures):
         for aug in self.augmentations:
             feats = aug(feats)
+            
+            for k, f in feats.features.items():
+                if np.any(np.isnan(f)):
+                    logger.warning(f"NaNs found in {k} after {aug.__class__.__name__} augmentation")
+                if np.any(np.isinf(f)):
+                    logger.warning(f"Infs found in {k} after {aug.__class__.__name__} augmentation")
+                if np.any(np.all(f == 0, axis=-1)):
+                    logger.warning(f"Empty {k} after {aug.__class__.__name__} augmentation")
+            
         return feats
 
 # Factory functions
