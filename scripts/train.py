@@ -281,8 +281,11 @@ class WrappedLightningModule(pl.LightningModule):
                     )
                     A_pred_soft = A_pred_soft.to(A.dtype)
                 # Keep the non-softmaxed loss for numerical stability
-            loss = 0.01 * loss + self.criterion_softmax(A_pred_soft, A)
+                loss = 0.01 * loss + self.criterion_softmax(A_pred_soft, A)
 
+        if torch.any(torch.isnan(loss)):
+            raise ValueError("NaN after loss summing")
+        
         # Reweighting does not need gradients
         with torch.no_grad():
             block_sum1 = torch.stack(
