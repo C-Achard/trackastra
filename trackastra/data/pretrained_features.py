@@ -135,7 +135,7 @@ class PretrainedFeatureExtractorConfig:
             raise ValueError(f"Model {self.model_name} is not available for feature extraction.")
         self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
         if self.additional_features is not None:
-            self.feat_dim += CTCData.FEATURES_DIMENSIONS[self.additional_features][2] # TODO if this ever accepts 3D data this will be incorrect
+            self.feat_dim += CTCData.FEATURES_DIMENSIONS[self.additional_features][2] + 1 # TODO if this ever accepts 3D data this will be incorrect
 
             if self.additional_features not in CTCData.FEATURES_DIMENSIONS:
                 raise ValueError(f"Additional feature {self.additional_features} is not valid.")
