@@ -187,7 +187,7 @@ class WrappedLightningModule(pl.LightningModule):
         tracking_frequency: int = -1,  # log TRA metrics every that epochs
         batch_val_tb_idx: int = 0,  # the batch index to visualize in tensorboard
         div_upweight: float = 20,
-        per_param_clipping: bool = False,
+        # per_param_clipping: bool = False,
     ):
         super().__init__()
 
@@ -206,7 +206,7 @@ class WrappedLightningModule(pl.LightningModule):
         self.warmup_epochs = warmup_epochs
         self.max_epochs = max_epochs
         self.div_upweight = div_upweight
-        self.per_param_clipping = per_param_clipping
+        # self.per_param_clipping = per_param_clipping
 
     def _common_step(self, batch, eps=torch.finfo(torch.float32).eps):
         feats = batch["features"]
@@ -342,11 +342,11 @@ class WrappedLightningModule(pl.LightningModule):
 
     def on_before_optimizer_step(self, optimizer):
         # self.trainer.precision_plugin.scaler.unscale_(optimizer)
-        from torch.nn.utils import clip_grad_norm_
-        if self.per_param_clipping:
-            for param in self.model.parameters():
-                if param.grad is not None:
-                    clip_grad_norm_(param, max_norm=1.0)
+        # from torch.nn.utils import clip_grad_norm_
+        # if self.per_param_clipping:
+        #     for param in self.model.parameters():
+        #         if param.grad is not None:
+        #             clip_grad_norm_(param, max_norm=1.0)
         # Compute the 2-norm for each layer
         # If using mixed precision, the gradients are already unscaled here
         from lightning.pytorch.utilities import grad_norm
@@ -882,6 +882,7 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
+            input_proj_dropout=args.input_proj_dropout,
         )
 
         dummy_model_lightning = WrappedLightningModule(
@@ -894,7 +895,7 @@ def train(args):
             tracking_frequency=args.tracking_frequency,
             batch_val_tb_idx=0,
             div_upweight=args.div_upweight,
-            per_param_clipping=args.clip_grad_per_param,
+            # per_param_clipping=args.clip_grad_per_param,
         )
         dummy_model_lightning.to(device)
         preallocate_memory(
@@ -1021,6 +1022,7 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
+            input_proj_dropout=args.input_proj_dropout,
         )
 
     model_lightning = WrappedLightningModule(
@@ -1285,13 +1287,11 @@ def parse_train_args():
         default=None,
         help="If mode is pretrained_feats, specify the mode to use for feature extraction",
     )
-    
-    # Additional debug args
     parser.add_argument(
-        "--clip_grad_per_param",
-        type=str2bool,
-        default=False,
-        help="Clip gradients per parameter in addition to global norm clipping",
+        "--input_proj_dropout",
+        type=float,
+        default=0,
+        help="Dropout for input projection layer",
     )
 
     args, unknown_args = parser.parse_known_args()

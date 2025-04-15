@@ -288,6 +288,7 @@ class TrackingTransformer(torch.nn.Module):
             "none", "linear", "softmax", "quiet_softmax"
         ] = "quiet_softmax",
         attn_dist_mode: str = "v0",
+        input_proj_dropout: float = 0,
     ):
         super().__init__()
 
@@ -301,6 +302,7 @@ class TrackingTransformer(torch.nn.Module):
             num_decoder_layers=num_decoder_layers,
             window=window,
             dropout=dropout,
+            input_proj_dropout=input_proj_dropout,
             attn_positional_bias=attn_positional_bias,
             attn_positional_bias_n_spatial=attn_positional_bias_n_spatial,
             spatial_pos_cutoff=spatial_pos_cutoff,
@@ -317,7 +319,7 @@ class TrackingTransformer(torch.nn.Module):
         self.proj = nn.Linear(
             (1 + coord_dim) * pos_embed_per_dim + feat_dim * feat_embed_per_dim, d_model
         )
-        self.proj_dropout = nn.Dropout(0.1)
+        self.proj_dropout = nn.Dropout(input_proj_dropout)
         self.norm = nn.LayerNorm(d_model)
 
         self.encoder = nn.ModuleList(
