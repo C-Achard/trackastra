@@ -1035,7 +1035,7 @@ def train(args):
         tracking_frequency=args.tracking_frequency,
         batch_val_tb_idx=batch_val_tb_idx,
         div_upweight=args.div_upweight,
-        per_param_clipping=args.clip_grad_per_param,
+        # per_param_clipping=args.clip_grad_per_param,
     )
     # Compiling does not work!
     # model_lightning = torch.compile(model_lightning)
@@ -1056,7 +1056,7 @@ def train(args):
                 tracking_frequency=args.tracking_frequency,
                 batch_val_tb_idx=batch_val_tb_idx,
                 div_upweight=args.div_upweight,
-                per_param_clipping=args.clip_grad_per_param,
+                # per_param_clipping=args.clip_grad_per_param,
             )
         else:
             logging.warning(f"No checkpoint found in {logdir}")
