@@ -281,7 +281,7 @@ class WrappedLightningModule(pl.LightningModule):
                     )
                     A_pred_soft = A_pred_soft.to(A.dtype)
                 # Keep the non-softmaxed loss for numerical stability
-                loss = 0.01 * loss + self.criterion_softmax(A_pred_soft, A)
+            loss = 0.01 * loss + self.criterion_softmax(A_pred_soft, A)
 
         # Reweighting does not need gradients
         with torch.no_grad():
@@ -315,6 +315,9 @@ class WrappedLightningModule(pl.LightningModule):
             mask.sum(dim=(1, 2), keepdim=True) + eps
         )
         loss_per_sample = loss_normalized.sum(dim=(1, 2))
+        
+        if torch.any(torch.isnan(loss_per_sample)):
+            raise ValueError("NaN in loss_per_sample after reduction")
 
         # Hack: weight larger samples a little more...
         prefactor = torch.pow(mask.sum(dim=(1, 2)), 0.2)
@@ -366,8 +369,9 @@ class WrappedLightningModule(pl.LightningModule):
         out = self._common_step(batch)
         loss = out["loss"]
         if torch.isnan(loss):
-            print("NaN loss, skipping")
-            return None
+            # print("NaN loss, skipping")
+            # return None
+            raise ValueError("NaN loss")
 
         self.log(
             "train_loss",
