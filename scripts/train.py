@@ -188,6 +188,7 @@ class WrappedLightningModule(pl.LightningModule):
         batch_val_tb_idx: int = 0,  # the batch index to visualize in tensorboard
         div_upweight: float = 20,
         # per_param_clipping: bool = False,
+        weight_decay: float = 0.01,
     ):
         super().__init__()
 
@@ -202,6 +203,7 @@ class WrappedLightningModule(pl.LightningModule):
         self.batch_val_tb = None
 
         self.lr = learning_rate
+        self.weight_decay = weight_decay
         self.tracking_frequency = tracking_frequency
         self.warmup_epochs = warmup_epochs
         self.max_epochs = max_epochs
@@ -332,7 +334,7 @@ class WrappedLightningModule(pl.LightningModule):
             return None
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         return dict(
             optimizer=optimizer,
             lr_scheduler=WarmupCosineLRScheduler(
@@ -896,6 +898,7 @@ def train(args):
             batch_val_tb_idx=0,
             div_upweight=args.div_upweight,
             # per_param_clipping=args.clip_grad_per_param,
+            weight_decay=args.weight_decay,
         )
         dummy_model_lightning.to(device)
         preallocate_memory(
@@ -1036,6 +1039,7 @@ def train(args):
         batch_val_tb_idx=batch_val_tb_idx,
         div_upweight=args.div_upweight,
         # per_param_clipping=args.clip_grad_per_param,
+        weight_decay=args.weight_decay,
     )
     # Compiling does not work!
     # model_lightning = torch.compile(model_lightning)
@@ -1057,6 +1061,7 @@ def train(args):
                 batch_val_tb_idx=batch_val_tb_idx,
                 div_upweight=args.div_upweight,
                 # per_param_clipping=args.clip_grad_per_param,
+                weight_decay=args.weight_decay,
             )
         else:
             logging.warning(f"No checkpoint found in {logdir}")
@@ -1292,6 +1297,12 @@ def parse_train_args():
         type=float,
         default=0,
         help="Dropout for input projection layer",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=0.01,
+        help="Weight decay for the AdamW optimizer",
     )
 
     args, unknown_args = parser.parse_known_args()
