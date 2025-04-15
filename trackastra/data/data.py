@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 import logging
 from collections.abc import Sequence
 from pathlib import Path
@@ -1296,7 +1297,11 @@ class CTCData(Dataset):
 
         if self.augmenter is not None:
             feat = self.augmenter(feat)
-
+        
+        for k, f in feat.features.items():
+            if np.any(np.isnan(f)):
+                raise ValueError(f"NaN in {k} features of shape {f.shape}")
+            
         coords0 = np.concatenate((feat.timepoints[:, None], feat.coords), axis=-1)
         coords0 = torch.from_numpy(coords0).float()
         assoc_matrix = torch.from_numpy(assoc_matrix.astype(np.float32))

@@ -219,6 +219,12 @@ class WrappedLightningModule(pl.LightningModule):
         padding_mask = batch["padding_mask"]
         padding_mask = padding_mask.bool()
         
+        if torch.any(torch.isnan(feats)):
+            nan_dims = torch.any(torch.isnan(feats), dim=-1)
+            raise ValueError("NaN in features in dimensions: ", nan_dims)
+        if torch.any(torch.isnan(coords)):
+            raise ValueError("NaN in coords")
+        
         # torch.autograd.set_detect_anomaly(True)
         A_pred = self.model(coords, feats, padding_mask=padding_mask)
         
