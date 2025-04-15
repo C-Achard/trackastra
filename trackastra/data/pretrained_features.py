@@ -506,8 +506,15 @@ class FeatureExtractor(ABC):
             - labels (np.ndarray): Unique labels of the regions. (n_regions)
             - agg (callable): Aggregation function to use for averaging the embeddings.
         """
-        n_regions = len(timepoints)
-        timepoints_shifted = timepoints - timepoints.min()
+        try:
+            n_regions = len(timepoints)
+            timepoints_shifted = timepoints - timepoints.min()
+        except ValueError:
+            logger.error("Error: issue computing shifted timepoints.")
+            logger.error(f"Regions: {len(timepoints)}")
+            logger.error(f"Timepoints: {timepoints}")
+            return torch.zeros(n_regions, self.hidden_state_size, device=self.device)
+
         feats = torch.zeros(n_regions, self.hidden_state_size, device=self.device)
         patches = []
         times = np.unique(timepoints_shifted)
