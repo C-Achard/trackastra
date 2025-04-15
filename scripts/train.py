@@ -40,6 +40,7 @@ from trackastra.data.pretrained_features import (
     AVAILABLE_PRETRAINED_BACKBONES,
     PretrainedFeatureExtractorConfig,
 )
+from trackastra.data.wrfeat import _PROPERTIES
 from trackastra.model import TrackingTransformer
 from trackastra.utils import (
     blockwise_causal_norm,
@@ -847,6 +848,7 @@ def train(args):
             model_name=args.pretrained_feats_model,
             mode=args.pretrained_feats_mode,
             save_path=emb_save_path,
+            additional_features=args.pretrained_feats_additional_props,
         )
 
     n_gpus = torch.cuda.device_count() if args.distributed else 1
@@ -1291,6 +1293,13 @@ def parse_train_args():
         choices=["nearest_patch", "mean_patches"],
         default=None,
         help="If mode is pretrained_feats, specify the mode to use for feature extraction",
+    )
+    parser.add_argument(
+        "--pretrained_feats_additional_props",
+        type=str,
+        choices=list(_PROPERTIES.keys()),
+        default=None,
+        help="Additional regionprops features to use in addition to pretrained model embeddings",
     )
     parser.add_argument(
         "--input_proj_dropout",

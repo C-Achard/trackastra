@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from pathlib import Path
@@ -32,12 +33,6 @@ from trackastra.data.features import (
     extract_features_regionprops,
 )
 from trackastra.data.matching import matching
-from trackastra.data.pretrained_features import (
-    FeatureExtractor,
-    PretrainedBackboneType,
-    PretrainedFeatsExtractionMode,
-    PretrainedFeatureExtractorConfig,
-)
 
 # from ..utils import blockwise_sum, normalize
 from trackastra.utils import blockwise_sum, normalize
@@ -45,6 +40,13 @@ from trackastra.utils import blockwise_sum, normalize
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.INFO)
 logger.setLevel(logging.DEBUG)  # FIXME go back to INFO for release
+
+if TYPE_CHECKING:
+    from trackastra.data.pretrained_features import (
+        PretrainedBackboneType,
+        PretrainedFeatsExtractionMode,
+        PretrainedFeatureExtractorConfig,
+    )
 
 
 def _filter_track_df(df, start_frame, end_frame, downscale):
@@ -1164,7 +1166,11 @@ class CTCData(Dataset):
                 # normalization is performed in the feature extractor
                 features = [
                     wrfeat.WRPretrainedFeatures.from_pretrained_features(
-                        img=img[np.newaxis], mask=mask[np.newaxis], feature_extractor=self.feature_extractor, t_start=t
+                        img=img[np.newaxis], 
+                        mask=mask[np.newaxis], 
+                        feature_extractor=self.feature_extractor, 
+                        t_start=t, 
+                        additional_properties=self.pretrained_config.additional_features
                     )
                     for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
                 ]
@@ -1341,6 +1347,9 @@ class CTCData(Dataset):
         # get with first three folders
         img_folder_name = "_".join(self.root.parts[-3:]) if len(self.root.parts) >= 3 else "_".join(self.root.parts)
         img_folder_name = str(img_folder_name).replace(".", "").replace("/", "_").replace("\\", "_").replace(" ", "_")
+        from trackastra.data.pretrained_features import (
+            FeatureExtractor,
+        )
         self.feature_extractor = FeatureExtractor.from_model_name(
             self.pretrained_config.model_name,
             img_shape, 

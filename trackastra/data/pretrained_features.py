@@ -22,6 +22,7 @@ from transformers import (
     SamModel,
     SamProcessor,
 )
+from trackastra.data import CTCData
 
 MICRO_SAM_AVAILABLE = False
 try:
@@ -101,7 +102,8 @@ def average_time_decorator(func):
 
 @dataclass
 class PretrainedFeatureExtractorConfig:
-    """model_name (str):
+    """
+    model_name (str):
         Specify the pretrained backbone to use.
     save_path (str | Path):
         Specify the path to save the embeddings.
@@ -113,6 +115,8 @@ class PretrainedFeatureExtractorConfig:
     device (str):
         Specify the device to use for the model.
         If not set and "pretrained_feats" is used, the device is automatically set by default to "cuda", "mps" or "cpu" as available.
+    additional_features (str):
+        Specify any additional features (from regionprops) to include in the extraction process. See WRFeat documentation for available features.
     """
     model_name: PretrainedBackboneType
     save_path: str | Path = None
@@ -120,6 +124,7 @@ class PretrainedFeatureExtractorConfig:
     mode: PretrainedFeatsExtractionMode = "nearest_patch"
     device: str | None = None
     feat_dim: int = None
+    additional_features: str | None = None  # for regionprops features
     
     def __post_init__(self):
         self._guess_device()
@@ -129,6 +134,11 @@ class PretrainedFeatureExtractorConfig:
         if self.model_name not in AVAILABLE_PRETRAINED_BACKBONES.keys():
             raise ValueError(f"Model {self.model_name} is not available for feature extraction.")
         self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
+        if self.additional_features is not None:
+            self.feat_dim += CTCData.FEATURES_DIMENSIONS[self.additional_features][2] # TODO if this ever accepts 3D data this will be incorrect
+
+            if self.additional_features not in CTCData.FEATURES_DIMENSIONS:
+                raise ValueError(f"Additional feature {self.additional_features} is not valid.")
         
     def _guess_device(self):
         if self.device is None:

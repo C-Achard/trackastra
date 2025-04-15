@@ -2,13 +2,14 @@
 WindowedRegionFeatures (WRFeatures) is a class that holds regionprops features for a windowed track region.
 """
 
+from __future__ import annotations
 import itertools
 import logging
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from functools import reduce
-from typing import ClassVar, Literal
+from typing import ClassVar, Literal, TYPE_CHECKING
 
 import joblib
 import numpy as np
@@ -17,9 +18,11 @@ from edt import edt
 from skimage.measure import regionprops, regionprops_table
 from tqdm import tqdm
 
-from trackastra.data.pretrained_features import FeatureExtractor
+if TYPE_CHECKING:
+    from trackastra.data.pretrained_features import FeatureExtractor
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 _PROPERTIES = {
     "regionprops": (
@@ -145,15 +148,10 @@ class WRFeatures:
         return WRFeatures(
             coords=coords, labels=labels, timepoints=timepoints, features=features
         )
-
-    @classmethod
-    def from_mask_img(
-        cls,
-        mask: np.ndarray,
-        img: np.ndarray,
-        properties: str = "regionprops2",
-        t_start: int = 0,
-    ):
+        
+    @staticmethod
+    def get_regionprops_features(properties, mask, img, t_start=0):
+        """Extracts regionprops features from a mask and image."""
         _ntime, ndim = mask.shape[0], mask.ndim - 1
         if ndim not in (2, 3):
             raise ValueError("Only 2D or 3D data is supported")
@@ -200,6 +198,19 @@ class WRFeatures:
         if df.isnull().values.any():
             raise ValueError("NaNs found in features DataFrame")
 
+        return df, coords, labels, timepoints, properties
+    @classmethod
+    def from_mask_img(
+        cls,
+        mask: np.ndarray,
+        img: np.ndarray,
+        properties: str = "regionprops",
+        t_start: int = 0,
+    ):
+        df, coords, labels, timepoints, properties = cls.get_regionprops_features(
+            properties, mask, img, t_start=t_start
+        )
+
         features = OrderedDict(
             (
                 p,
@@ -229,8 +240,10 @@ class WRPretrainedFeatures(WRFeatures):
         labels: np.ndarray,
         timepoints: np.ndarray,
         features: OrderedDict[np.ndarray],
+        additional_properties: str = None
     ):
         super().__init__(coords, labels, timepoints, features)
+        self.additional_properties = additional_properties
         
     @classmethod
     def from_pretrained_features(
@@ -239,33 +252,34 @@ class WRPretrainedFeatures(WRFeatures):
         mask: np.ndarray,
         feature_extractor: FeatureExtractor,
         t_start: int = 0,
+        additional_properties: str = None,
     ) -> 'WRPretrainedFeatures':
 
         ndim = img.ndim - 1
         if ndim not in (2, 3):
             raise ValueError("Only 2D or 3D data is supported")
             
-        df_properties = ("label", "centroid")
-        dfs = []
-        for i, (y, x) in enumerate(zip(mask, img)):
-            _df = pd.DataFrame(
-                regionprops_table(y, intensity_image=x, properties=df_properties)
-            )
-            _df["timepoint"] = i + t_start
-
-            dfs.append(_df)
-        df = pd.concat(dfs)
-
-        timepoints = df["timepoint"].values.astype(np.int32)
-        labels = df["label"].values.astype(np.int32)
-        coords = df[[f"centroid-{i}" for i in range(ndim)]].values.astype(np.float32)
+        df, coords, labels, timepoints, properties = cls.get_regionprops_features(
+            additional_properties, mask, img, t_start=t_start
+        )
 
         _, features = feature_extractor.extract_embedding(mask, timepoints, labels, coords) 
         features = features.detach().cpu().numpy()
         feats_dict = OrderedDict(pretrained_feats=features)
+        # Add additional features similarly to WRFeatures if any
+        if additional_properties is not None:
+            for p in properties:
+                feats_dict[p] = np.stack(
+                    [
+                        df[c].values.astype(np.float32)
+                        for c in df.columns
+                        if c.startswith(p)
+                    ],
+                    axis=-1,
+                )
         
         return cls(
-            coords=coords, labels=labels, timepoints=timepoints, features=feats_dict,
+            coords=coords, labels=labels, timepoints=timepoints, features=feats_dict, additional_properties=additional_properties
         )
 
 # Augmentations
