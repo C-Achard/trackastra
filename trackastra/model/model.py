@@ -317,6 +317,7 @@ class TrackingTransformer(torch.nn.Module):
         self.proj = nn.Linear(
             (1 + coord_dim) * pos_embed_per_dim + feat_dim * feat_embed_per_dim, d_model
         )
+        self.proj_dropout = nn.Dropout(0.1)
         self.norm = nn.LayerNorm(d_model)
 
         self.encoder = nn.ModuleList(
@@ -393,6 +394,7 @@ class TrackingTransformer(torch.nn.Module):
             features = torch.cat((pos, features), axis=-1)
 
         features = self.proj(features)
+        features = self.proj_dropout(features)
         features = self.norm(features)
 
         x = features
