@@ -170,9 +170,6 @@ class BalancedBatchSampler(BatchSampler):
                 batch = idx_pool[j : j + self.batch_size]
                 batches.append(batch)
         
-        if np.any(np.all(batch["features"] == 0, axis=1)):
-            raise ValueError("Batch contains empty features.")
-        
         return batches
 
     def __iter__(self):

@@ -615,7 +615,9 @@ class WRAugmentationPipeline:
         self.augmentations = augmentations
 
     def __call__(self, feats: WRFeatures):
+        logger.debug(f"Applying {len(self.augmentations)} augmentations")
         for aug in self.augmentations:
+            logger.debug(f"Applying {aug.__class__.__name__} augmentation")
             feats = aug(feats)
             
             for k, f in feats.features.items():

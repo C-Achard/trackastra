@@ -212,6 +212,7 @@ class WrappedLightningModule(pl.LightningModule):
         # self.per_param_clipping = per_param_clipping
 
     def _common_step(self, batch, eps=torch.finfo(torch.float32).eps):
+        # torch.autograd.set_detect_anomaly(True)
         feats = batch["features"]
         coords = batch["coords"]
         A = batch["assoc_matrix"]
@@ -222,12 +223,9 @@ class WrappedLightningModule(pl.LightningModule):
         if torch.any(torch.isnan(feats)):
             nan_dims = torch.any(torch.isnan(feats), dim=-1)
             raise ValueError("NaN in features in dimensions: ", nan_dims)
-        elif torch.any(torch.all(feats == 0, dim=-1)):
-            raise ValueError("Emtpy features found")
         if torch.any(torch.isnan(coords)):
             raise ValueError("NaN in coords")
         
-        torch.autograd.set_detect_anomaly(True)
         A_pred = self.model(coords, feats, padding_mask=padding_mask)
         
         # remove inf values that might happen due to float16 numerics
@@ -418,7 +416,7 @@ class WrappedLightningModule(pl.LightningModule):
         loss = out["loss"]
         if torch.isnan(loss):
             print("NaN loss, skipping")
-            return None
+            raise ValueError("NaN loss")
 
         self.log(
             "val_loss",
