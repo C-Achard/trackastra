@@ -315,6 +315,7 @@ class TrackingTransformer(torch.nn.Module):
         # self.window = window
         # self.feat_dim = feat_dim
         # self.coord_dim = coord_dim
+        self.feature_norm = nn.LayerNorm(feat_dim)
         self.features_proj = nn.Linear(
             feat_dim, d_model * feat_embed_per_dim, bias=False
         )
@@ -396,9 +397,10 @@ class TrackingTransformer(torch.nn.Module):
             if features is None or features.numel() == 0:
                 features = pos
             else:
-                features = self.feat_embed(features)
+                features = self.feature_norm(features)
                 features = self.features_proj(features)
                 features = self.features_proj_dropout(features)
+                features = self.feat_embed(features)
                 features = torch.cat((pos, features), axis=-1)
         
             features = self.proj(features)
