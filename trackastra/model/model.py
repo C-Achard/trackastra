@@ -316,10 +316,15 @@ class TrackingTransformer(torch.nn.Module):
         # self.feat_dim = feat_dim
         # self.coord_dim = coord_dim
 
-        self.proj = nn.Linear(
-            (1 + coord_dim) * pos_embed_per_dim + feat_dim * feat_embed_per_dim, d_model
+        self.feature_proj = nn.Linear(feat_dim, d_model) if feat_dim > 0 else nn.Identity()
+        self.feature_proj_dropout = nn.Dropout(input_proj_dropout) if feat_dim > 0 else nn.Identity()
+        self.feature_attention = nn.MultiheadAttention(
+            embed_dim=d_model, num_heads=4, dropout=input_proj_dropout
         )
-        self.proj_dropout = nn.Dropout(input_proj_dropout)
+        self.proj = nn.Linear(
+            (1 + coord_dim) * pos_embed_per_dim + d_model * feat_embed_per_dim, d_model
+        )
+        # self.proj_dropout = nn.Dropout(input_proj_dropout)
         self.norm = nn.LayerNorm(d_model)
 
         self.encoder = nn.ModuleList(
@@ -389,16 +394,20 @@ class TrackingTransformer(torch.nn.Module):
 
         pos = self.pos_embed(coords)
         
-        if features is None or features.numel() == 0:
-            features = pos
-        else:
-            features = self.feat_embed(features)
-            features = torch.cat((pos, features), axis=-1)
-        
         with torch.amp.autocast(enabled=False, device_type=features.device.type):
+            if features is None or features.numel() == 0:
+                features = pos
+            else:
+                features = self.feat_embed(features)
+                features = self.feature_proj(features)
+                features = self.feature_proj_dropout(features)
+                features = self.feature_attention(
+                    features.transpose(0, 1), features.transpose(0, 1), features.transpose(0, 1)
+                )[0].transpose(0, 1)
+                features = torch.cat((pos, features), axis=-1)
             features = self.proj(features)
         features = features.clamp(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
-        features = self.proj_dropout(features)
+        # features = self.proj_dropout(features)
         features = self.norm(features)
 
         x = features
@@ -420,7 +429,7 @@ class TrackingTransformer(torch.nn.Module):
         A = torch.einsum("bnd,bmd->bnm", x, y)  # /math.sqrt(_D)
         
         if torch.any(torch.isnan(A)):
-            # breakpoint()
+            breakpoint()
             logger.error("NaN in A")
 
         return A
