@@ -1624,6 +1624,8 @@ def collate_sequence_padding(batch):
         pad_mask[i, n_max_len - n_pad :] = True
 
     batch_new["padding_mask"] = pad_mask.bool()
+    if torch.all(pad_mask.bool()):
+        raise ValueError("No valid entries for padding mask!")
     return batch_new
 
 

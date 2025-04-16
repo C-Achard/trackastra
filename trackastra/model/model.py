@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 import torch
-import math
+
 # from torch_geometric.nn import GATv2Conv
 import yaml
 from torch import nn
@@ -388,14 +388,16 @@ class TrackingTransformer(torch.nn.Module):
         coords = coords - min_time
 
         pos = self.pos_embed(coords)
-
+        
         if features is None or features.numel() == 0:
             features = pos
         else:
             features = self.feat_embed(features)
             features = torch.cat((pos, features), axis=-1)
-
-        features = self.proj(features)
+        
+        with torch.amp.autocast(enabled=False, device_type=features.device.type):
+            features = self.proj(features)
+        features = features.clamp(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
         features = self.proj_dropout(features)
         features = self.norm(features)
 
@@ -415,7 +417,11 @@ class TrackingTransformer(torch.nn.Module):
         y = self.head_y(y)
 
         # outer product is the association matrix (logits)
-        A = torch.einsum("bnd,bmd->bnm", x, y)#/math.sqrt(_D)
+        A = torch.einsum("bnd,bmd->bnm", x, y)  # /math.sqrt(_D)
+        
+        if torch.any(torch.isnan(A)):
+            # breakpoint()
+            logger.error("NaN in A")
 
         return A
 

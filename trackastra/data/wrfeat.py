@@ -369,11 +369,30 @@ class WRBaseAugmentation(ABC):
     def __call__(self, features: WRFeatures):
         if self._rng.rand() > self._p or len(features) == 0:
             return features
-        return self._augment(features)
+        feats = self._augment(features)
+        self.check_features(feats)
+        return feats
 
     @abstractmethod
     def _augment(self, features: WRFeatures):
         raise NotImplementedError()
+    
+    def check_features(self, features: WRFeatures):
+        """Check if features are valid."""
+        if not isinstance(features, WRFeatures):
+            raise ValueError(f"Expected WRFeatures, got {type(features)}")
+        if len(features) == 0:
+            raise ValueError("Empty features")
+        
+        for k, f in features.features.items():
+            if np.any(np.isnan(f)):
+                logger.warning(f"NaNs found in {k} after {self.__class__.__name__} augmentation")
+            if np.any(np.isinf(f)):
+                logger.warning(f"Infs found in {k} after {self.__class__.__name__} augmentation")
+            if np.any(np.all(f == 0, axis=-1)):
+                logger.warning(f"Empty {k} after {self.__class__.__name__} augmentation")
+        
+        return True
 
 
 class WRRandomFlip(WRBaseAugmentation):
@@ -393,7 +412,7 @@ class WRRandomFlip(WRBaseAugmentation):
             if f == 1:
                 points[:, ndim - i - 1] *= -1
                 M[i, i] = -1
-        
+                
         feats = OrderedDict(
             (k, _transform_affine(k, v, M)) for k, v in features.features.items()
         )
@@ -472,6 +491,7 @@ class WRRandomAffine(WRBaseAugmentation):
         - "area"
         - "equivalent_diameter_area"
         - "inertia_tensor"
+        - "coords"
     """
     def __init__(
         self,
@@ -570,10 +590,6 @@ class WRRandomOffset(WRBaseAugmentation):
         offset = self._rng.uniform(*self.offset, features.coords.shape)
         coords = features.coords + offset
         
-        if np.any(coords < 0):
-            # logger.warning("Negative coordinates after random offset")
-            coords = np.clip(coords, 0, None)
-        
         return WRFeatures(
             coords=coords,
             labels=features.labels,
@@ -598,10 +614,6 @@ class WRRandomMovement(WRBaseAugmentation):
         offset = (features.timepoints[:, None] - tmin) * base_offset[None]
         coords = features.coords + offset
         
-        if np.any(coords < 0):
-            # logger.warning("Negative coordinates after random movement")
-            coords = np.clip(coords, 0, None)
-        
         return WRFeatures(
             coords=coords,
             labels=features.labels,
@@ -615,18 +627,12 @@ class WRAugmentationPipeline:
         self.augmentations = augmentations
 
     def __call__(self, feats: WRFeatures):
-        logger.debug(f"Applying {len(self.augmentations)} augmentations")
+        # logger.debug(f"Applying {len(self.augmentations)} augmentations")
         for aug in self.augmentations:
-            logger.debug(f"Applying {aug.__class__.__name__} augmentation")
+            # logger.debug(f"Applying {aug.__class__.__name__} augmentation")
             feats = aug(feats)
-            
-            for k, f in feats.features.items():
-                if np.any(np.isnan(f)):
-                    logger.warning(f"NaNs found in {k} after {aug.__class__.__name__} augmentation")
-                if np.any(np.isinf(f)):
-                    logger.warning(f"Infs found in {k} after {aug.__class__.__name__} augmentation")
-                if np.any(np.all(f == 0, axis=-1)):
-                    logger.warning(f"Empty {k} after {aug.__class__.__name__} augmentation")
+        
+        # logger.debug(f"Coords : {feats.coords}")
             
         return feats
 
