@@ -1305,7 +1305,7 @@ def parse_train_args():
     parser.add_argument(
         "--pretrained_feats_mode",
         type=str,
-        choices=["nearest_patch", "mean_patches"],
+        choices=["nearest_patch", "mean_patches", "max_patches"],
         default=None,
         help="If mode is pretrained_feats, specify the mode to use for feature extraction",
     )

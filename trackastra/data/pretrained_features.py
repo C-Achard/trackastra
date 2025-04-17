@@ -22,6 +22,7 @@ from transformers import (
     SamModel,
     SamProcessor,
 )
+
 from trackastra.data import CTCData
 
 MICRO_SAM_AVAILABLE = False
@@ -48,7 +49,8 @@ AVAILABLE_PRETRAINED_BACKBONES = {}
 PretrainedFeatsExtractionMode = Literal[
     # "exact_patch",  # Uses the image patch centered on the detection for embedding
     "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-    "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
+    "mean_patches",  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
+    "max_patches"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
 ]
 
 PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.11 so it has to be copied
@@ -102,8 +104,7 @@ def average_time_decorator(func):
 
 @dataclass
 class PretrainedFeatureExtractorConfig:
-    """
-    model_name (str):
+    """model_name (str):
         Specify the pretrained backbone to use.
     save_path (str | Path):
         Specify the path to save the embeddings.
@@ -111,7 +112,7 @@ class PretrainedFeatureExtractorConfig:
         Specify the batch size to use for the model.
     mode (str):
         Specify the mode to use for the model.
-        Currently available modes are "nearest_patch" and "mean_patches".
+        Currently available modes are "nearest_patch", "mean_patches", and "max_patches".
     device (str):
         Specify the device to use for the model.
         If not set and "pretrained_feats" is used, the device is automatically set by default to "cuda", "mps" or "cpu" as available.
@@ -135,7 +136,7 @@ class PretrainedFeatureExtractorConfig:
             raise ValueError(f"Model {self.model_name} is not available for feature extraction.")
         self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
         if self.additional_features is not None:
-            self.feat_dim += CTCData.FEATURES_DIMENSIONS[self.additional_features][2] + 1 # TODO if this ever accepts 3D data this will be incorrect
+            self.feat_dim += CTCData.FEATURES_DIMENSIONS[self.additional_features][2] + 1  # TODO if this ever accepts 3D data this will be incorrect
 
             if self.additional_features not in CTCData.FEATURES_DIMENSIONS:
                 raise ValueError(f"Additional feature {self.additional_features} is not valid.")
@@ -288,7 +289,11 @@ class FeatureExtractor(ABC):
         elif self.mode == "mean_patches":
             if masks is None or labels is None or timepoints is None:
                 raise ValueError("Masks and labels must be provided for mean patch mode.")
-            feats = self._mean_patches(masks, timepoints, labels)
+            feats = self._agg_patches(masks, timepoints, labels)
+        elif self.mode == "max_patches":
+            if masks is None or labels is None or timepoints is None:
+                raise ValueError("Masks and labels must be provided for max patch mode.")
+            feats = self._agg_patches(masks, timepoints, labels, agg=torch.max)
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented.")
         
@@ -507,7 +512,7 @@ class FeatureExtractor(ABC):
         return feats
     
     # @average_time_decorator
-    def _mean_patches(self, masks, timepoints, labels, agg=torch.mean):
+    def _agg_patches(self, masks, timepoints, labels, agg=torch.mean):
         """Averages the embeddings of all patches that intersect with the detection.
         
         Args:
@@ -611,11 +616,7 @@ class HieraFeatures(FeatureExtractor):
         save_path: str | Path,
         batch_size: int = 16,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        mode: Literal[
-            # "exact_patch",  # Uses the image patch centered on the detection for embedding
-            "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-            "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-            ] = "nearest_patch",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         # self.input_size = 224
@@ -664,11 +665,7 @@ class DinoV2Features(FeatureExtractor):
         save_path: str | Path,
         batch_size: int = 16,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        mode: Literal[
-            # "exact_patch",  # Uses the image patch centered on the detection for embedding
-            "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-            "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-            ] = "nearest_patch",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 224
@@ -713,11 +710,7 @@ class SAMFeatures(FeatureExtractor):
         save_path: str | Path,
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        mode: Literal[
-            # "exact_patch",  # Uses the image patch centered on the detection for embedding
-            "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-            "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-            ] = "nearest_patch",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 1024
@@ -749,11 +742,7 @@ class SAM2Features(FeatureExtractor):
         save_path: str | Path,
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        mode: Literal[
-            # "exact_patch",  # Uses the image patch centered on the detection for embedding
-            "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-            "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-            ] = "nearest_patch",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 1024
@@ -814,11 +803,7 @@ class MicroSAMFeatures(FeatureExtractor):
         save_path: str | Path,
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        mode: Literal[
-            # "exact_patch",  # Uses the image patch centered on the detection for embedding
-            "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-            "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-            ] = "nearest_patch",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
         ):
         if not MICRO_SAM_AVAILABLE:
             raise ImportError("microSAM is not available. Please install it following the instructions in the documentation.")
