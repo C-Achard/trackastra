@@ -322,7 +322,7 @@ class TrackingTransformer(torch.nn.Module):
         self.features_proj = nn.Linear(
             feat_dim, d_model, bias=False
         ) if extra_feature_layer else nn.Identity()
-        self.input_batch_norm = nn.BatchNorm1d(d_model) if extra_feature_layer else nn.Identity()
+        self.input_batch_norm = nn.BatchNorm1d(feat_dim) if extra_feature_layer else nn.Identity()
         self.features_proj_dropout = nn.Dropout(input_proj_dropout) if extra_feature_layer else nn.Identity()
         ###
         self.proj = nn.Linear(
