@@ -322,6 +322,7 @@ class TrackingTransformer(torch.nn.Module):
         self.features_proj = nn.Linear(
             feat_dim, d_model, bias=False
         ) if extra_feature_layer else nn.Identity()
+        self.input_batch_norm = nn.BatchNorm1d(d_model) if extra_feature_layer else nn.Identity()
         self.features_proj_dropout = nn.Dropout(input_proj_dropout) if extra_feature_layer else nn.Identity()
         ###
         self.proj = nn.Linear(
@@ -329,9 +330,6 @@ class TrackingTransformer(torch.nn.Module):
         ) if extra_feature_layer else nn.Linear(
             (1 + coord_dim) * pos_embed_per_dim + feat_dim * feat_embed_per_dim, d_model
         )
-        
-        self.norm_feats_mean = None
-        self.norm_feats_std = None
         
         self.norm = nn.LayerNorm(d_model)
 
@@ -387,11 +385,6 @@ class TrackingTransformer(torch.nn.Module):
 
         # self.pos_embed = NoPositionalEncoding(d=pos_embed_per_dim * (1 + coord_dim))
 
-    def normalize_feats(self, feats, eps=1e-5):
-        if getattr(self, "norm_feats_mean", None) is None or getattr(self, "norm_feats_std", None) is None:
-            return feats
-        return (feats - self.norm_feats_mean) / (self.norm_feats_std + eps)
-    
     def forward(self, coords, features=None, padding_mask=None):
         assert coords.ndim == 3 and coords.shape[-1] in (3, 4)
         _B, _N, _D = coords.shape
@@ -412,7 +405,7 @@ class TrackingTransformer(torch.nn.Module):
                 features = pos
             else:
                 # Extra layers
-                features = self.normalize_feats(features)
+                features = self.input_batch_norm(features.transpose(1, 2)).transpose(1, 2)
                 features = self.features_proj(features)
                 features = self.features_proj_dropout(features)
                 ###
@@ -420,7 +413,7 @@ class TrackingTransformer(torch.nn.Module):
                 features = torch.cat((pos, features), axis=-1)
         
             features = self.proj(features)
-        # Clamp input as we return to mixed precision
+        # Clamp input when returning to mixed precision
         features = features.clamp(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
         features = self.norm(features)
 
