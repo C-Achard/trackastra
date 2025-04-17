@@ -220,7 +220,6 @@ class WrappedLightningModule(pl.LightningModule):
     
     @feats_mean.setter
     def feats_mean(self, value):
-        breakpoint()
         if value is None:
             self._feats_mean = None
         else:
@@ -824,6 +823,8 @@ def compute_mean_std(datamodule, feat_dim, feature_key="features"):
     n_samples = 0
     sum_ = torch.zeros(feat_dim)
     sum_sq = torch.zeros(feat_dim)
+    augment = datamodule.augment
+    datamodule.augment = 0
     workers = datamodule.loader_kwargs["num_workers"]
     datamodule.loader_kwargs["num_workers"] = 0
     persistent_workers = datamodule.loader_kwargs.get("persistent_workers", False)
@@ -854,6 +855,7 @@ def compute_mean_std(datamodule, feat_dim, feature_key="features"):
     datamodule.loader_kwargs["num_workers"] = workers
     if persistent_workers:
         datamodule.loader_kwargs["persistent_workers"] = True
+    datamodule.augment = augment
     return mean, std
 
 

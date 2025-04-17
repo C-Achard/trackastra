@@ -440,7 +440,6 @@ class TrackingTransformer(torch.nn.Module):
         A = torch.einsum("bnd,bmd->bnm", x, y)  # /math.sqrt(_D)
         
         if torch.any(torch.isnan(A)):
-            # breakpoint()
             logger.error("NaN in A")
 
         return A

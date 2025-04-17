@@ -322,6 +322,13 @@ class CTCData(Dataset):
 
         if kwargs:
             logger.warning(f"Unused kwargs: {kwargs}")
+            
+        # Check feature dimensions
+        if self.features in ("wrfeat", "pretrained_feats"):
+            if self.feat_dim != self._getitem_wrfeat(0)["features"].shape[-1]:
+                raise ValueError(
+                    f"Feature dimension mismatch: {self.feat_dim} != {self._getitem_wrfeat(0)['features'].shape[-1]}"
+                )
 
     @property
     def feat_dim(self):
