@@ -975,6 +975,7 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
+            extra_feature_layer=args.extra_feature_layer,
             input_proj_dropout=args.input_proj_dropout,
         )
 
@@ -1116,6 +1117,7 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
+            extra_feature_layer=args.extra_feature_layer,
             input_proj_dropout=args.input_proj_dropout,
         )
 
@@ -1376,6 +1378,7 @@ def parse_train_args():
             " imbalance)"
         ),
     )
+    # Pretrained feats + extra arguments
     parser.add_argument(
         "--pretrained_feats_model",
         type=str,
@@ -1409,7 +1412,13 @@ def parse_train_args():
         default=0.01,
         help="Weight decay for the AdamW optimizer",
     )
-
+    parser.add_argument(
+        "--extra_feature_layer",
+        type=str2bool,
+        default=False,
+        help="Use extra feature layer for pretrained model features",
+    )
+    
     args, unknown_args = parser.parse_known_args()
 
     # Hack to allow for --input_test
