@@ -129,7 +129,7 @@ class CTCData(Dataset):
     # Amount of feature per mode per dimension
     FEATURES_DIMENSIONS: ClassVar = {
         "wrfeat": {
-            2: 7,
+            2: 8,
             3: 12,
         },
         "regionprops": {
