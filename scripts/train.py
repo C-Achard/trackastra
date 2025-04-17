@@ -210,7 +210,45 @@ class WrappedLightningModule(pl.LightningModule):
         self.max_epochs = max_epochs
         self.div_upweight = div_upweight
         # self.per_param_clipping = per_param_clipping
+        
+        self._feats_mean = None
+        self._feats_std = None
+    
+    @property
+    def feats_mean(self):
+        return self._feats_mean
+    
+    @feats_mean.setter
+    def feats_mean(self, value):
+        breakpoint()
+        if value is None:
+            self._feats_mean = None
+        else:
+            value = value.to(self.device)
+            if getattr(self, "norm_feats_mean", None) is not None:
+                self.norm_feats_mean = value
+            else:
+                self.register_buffer("norm_feats_mean", value)
+            self._feats_mean = self.norm_feats_mean
+            logger.debug(f"Feature mean: {self._feats_mean}")
 
+    @property
+    def feats_std(self):
+        return self._feats_std
+    
+    @feats_std.setter
+    def feats_std(self, value):
+        if value is None:
+            self._feats_std = None
+        else:
+            value = value.to(self.device)
+            if getattr(self, "norm_feats_std", None) is not None:
+                self.norm_feats_std = value
+            else:
+                self.register_buffer("norm_feats_std", value)
+            self._feats_std = self.norm_feats_std
+            logger.debug(f"Feature std: {self._feats_std}")
+    
     def _common_step(self, batch, eps=torch.finfo(torch.float32).eps):
         # torch.autograd.set_detect_anomaly(True)
         feats = batch["features"]
@@ -225,7 +263,7 @@ class WrappedLightningModule(pl.LightningModule):
             raise ValueError("NaN in features in dimensions: ", nan_dims)
         if torch.any(torch.isnan(coords)):
             raise ValueError("NaN in coords")
-        
+
         A_pred = self.model(coords, feats, padding_mask=padding_mask)
         
         # remove inf values that might happen due to float16 numerics
@@ -781,6 +819,44 @@ def create_wandb_logger(run_name, wandb_project):
     return wandb_logger
 
 
+def compute_mean_std(datamodule, feat_dim, feature_key="features"):
+    """Compute mean and std of features across the whole dataset."""
+    n_samples = 0
+    sum_ = torch.zeros(feat_dim)
+    sum_sq = torch.zeros(feat_dim)
+    workers = datamodule.loader_kwargs["num_workers"]
+    datamodule.loader_kwargs["num_workers"] = 0
+    persistent_workers = datamodule.loader_kwargs.get("persistent_workers", False)
+    if persistent_workers:
+        datamodule.loader_kwargs["persistent_workers"] = False
+    loader = datamodule.train_dataloader()
+    for i, batch in enumerate(loader):
+        feats = batch[feature_key]  # shape: (batch, seq, feat_dim)
+        feats = feats.float().cpu()
+        mask = batch.get("padding_mask", None)
+        if mask is not None:
+            mask = ~mask.bool()
+            feats = feats[mask]
+        else:
+            feats = feats.view(-1, feats.shape[-1])
+
+        n = feats.shape[0]
+        n_samples += n
+        sum_ += feats.sum(dim=0)
+        sum_sq += (feats ** 2).sum(dim=0)
+        print(
+            f"Computing statistics for batch {i + 1}/{len(loader)}",
+            end="\r",
+        )
+
+    mean = sum_ / n_samples
+    std = (sum_sq / n_samples - mean ** 2).sqrt()
+    datamodule.loader_kwargs["num_workers"] = workers
+    if persistent_workers:
+        datamodule.loader_kwargs["persistent_workers"] = True
+    return mean, std
+
+
 def train(args):
     args.seed = seed(args.seed)
     if args.model is None:
@@ -992,14 +1068,14 @@ def train(args):
 
     callbacks.append(pl.pytorch.callbacks.Timer(interval="epoch"))
     # # Mostly for stopping broken runs
-    # callbacks.append(
-    #     pl.pytorch.callbacks.EarlyStopping(
-    #         monitor="val_loss",
-    #         patience=args.epochs // 6,
-    #         mode="min",
-    #         verbose=True,
-    #     )
-    # )
+    callbacks.append(
+        pl.pytorch.callbacks.EarlyStopping(
+            monitor="val_loss",
+            patience=args.epochs // 6,
+            mode="min",
+            verbose=True,
+        )
+    )
 
     if args.example_images:
         callbacks.append(ExampleImages())
@@ -1075,7 +1151,6 @@ def train(args):
                 tracking_frequency=args.tracking_frequency,
                 batch_val_tb_idx=batch_val_tb_idx,
                 div_upweight=args.div_upweight,
-                # per_param_clipping=args.clip_grad_per_param,
                 weight_decay=args.weight_decay,
             )
         else:
@@ -1117,6 +1192,14 @@ def train(args):
         logger.info(f"Resuming from {resume_path}")
     else:
         resume_path = None
+        
+    # Normalize if using pretrained features
+    if args.features == "pretrained_feats":
+        datamodule.prepare_data()
+        datamodule.setup("fit")
+        model_lightning.feats_mean, model_lightning.feats_std = compute_mean_std(
+            datamodule, feat_dim, feature_key="features"
+        )
 
     if args.epochs > 0:
         logger.info("Using lightning datamodule")

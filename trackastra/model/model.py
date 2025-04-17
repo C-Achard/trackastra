@@ -288,6 +288,7 @@ class TrackingTransformer(torch.nn.Module):
             "none", "linear", "softmax", "quiet_softmax"
         ] = "quiet_softmax",
         attn_dist_mode: str = "v0",
+        extra_feature_layer: bool = False,
         input_proj_dropout: float = 0,
     ):
         super().__init__()
@@ -302,26 +303,31 @@ class TrackingTransformer(torch.nn.Module):
             num_decoder_layers=num_decoder_layers,
             window=window,
             dropout=dropout,
-            input_proj_dropout=input_proj_dropout,
             attn_positional_bias=attn_positional_bias,
             attn_positional_bias_n_spatial=attn_positional_bias_n_spatial,
             spatial_pos_cutoff=spatial_pos_cutoff,
             feat_embed_per_dim=feat_embed_per_dim,
             causal_norm=causal_norm,
             attn_dist_mode=attn_dist_mode,
+            extra_feature_layer=extra_feature_layer,
+            input_proj_dropout=input_proj_dropout,
         )
 
         # TODO remove, alredy present in self.config
         # self.window = window
         # self.feat_dim = feat_dim
         # self.coord_dim = coord_dim
-        self.feature_norm = nn.LayerNorm(feat_dim)
+        
+        # Extra layers
         self.features_proj = nn.Linear(
-            feat_dim, d_model * feat_embed_per_dim, bias=False
-        )
-        self.features_proj_dropout = nn.Dropout(input_proj_dropout)
+            feat_dim, d_model, bias=False
+        ) if extra_feature_layer else nn.Identity()
+        self.features_proj_dropout = nn.Dropout(input_proj_dropout) if extra_feature_layer else nn.Identity()
+        ###
         self.proj = nn.Linear(
             (1 + coord_dim) * pos_embed_per_dim + d_model * feat_embed_per_dim, d_model
+        ) if extra_feature_layer else nn.Linear(
+            (1 + coord_dim) * pos_embed_per_dim + feat_dim * feat_embed_per_dim, d_model
         )
         # self.proj_dropout = nn.Dropout(input_proj_dropout)
         self.norm = nn.LayerNorm(d_model)
@@ -378,6 +384,11 @@ class TrackingTransformer(torch.nn.Module):
 
         # self.pos_embed = NoPositionalEncoding(d=pos_embed_per_dim * (1 + coord_dim))
 
+    def normalize_feats(self, feats, eps=1e-5):
+        if getattr(self, "norm_feats_mean", None) is None or getattr(self, "norm_feats_std", None) is None:
+            return feats
+        return (feats - self.norm_feats_mean) / (self.norm_feats_std + eps)
+    
     def forward(self, coords, features=None, padding_mask=None):
         assert coords.ndim == 3 and coords.shape[-1] in (3, 4)
         _B, _N, _D = coords.shape
@@ -397,15 +408,17 @@ class TrackingTransformer(torch.nn.Module):
             if features is None or features.numel() == 0:
                 features = pos
             else:
-                features = self.feature_norm(features)
+                # Extra layers
+                features = self.normalize_feats(features)
                 features = self.features_proj(features)
                 features = self.features_proj_dropout(features)
+                ###
                 features = self.feat_embed(features)
                 features = torch.cat((pos, features), axis=-1)
         
             features = self.proj(features)
+        # Clamp input as we return to mixed precision
         features = features.clamp(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
-        # features = self.proj_dropout(features)
         features = self.norm(features)
 
         x = features
