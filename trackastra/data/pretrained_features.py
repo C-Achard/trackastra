@@ -545,7 +545,11 @@ class FeatureExtractor(ABC):
             patches_feats = []
             for patch in patches[t][labels[i]]:
                 patches_feats.append(embeddings[t][patch[1] * self.final_grid_size + patch[0]])
-            return agg(torch.stack(patches_feats), dim=0)
+            aggregated = agg(torch.stack(patches_feats), dim=0)
+            # If agg is torch.max, extract only the values
+            if isinstance(aggregated, torch.return_types.max):
+                aggregated = aggregated.values
+            return aggregated
         
         res = joblib.Parallel(n_jobs=8, backend="threading")(
             joblib.delayed(process_region)(i, t) for i, t in enumerate(timepoints_shifted)
