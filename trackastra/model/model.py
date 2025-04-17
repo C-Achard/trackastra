@@ -329,7 +329,10 @@ class TrackingTransformer(torch.nn.Module):
         ) if extra_feature_layer else nn.Linear(
             (1 + coord_dim) * pos_embed_per_dim + feat_dim * feat_embed_per_dim, d_model
         )
-        # self.proj_dropout = nn.Dropout(input_proj_dropout)
+        
+        self.norm_feats_mean = None
+        self.norm_feats_std = None
+        
         self.norm = nn.LayerNorm(d_model)
 
         self.encoder = nn.ModuleList(
