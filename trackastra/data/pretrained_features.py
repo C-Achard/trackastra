@@ -210,6 +210,7 @@ class FeatureExtractor(ABC):
         self.batch_size = batch_size
         self.device = device
         self.mode = mode
+        self.additional_features = None
         # Saving parameters
         self.save_path: str | Path = save_path
         self.embeddings = None
@@ -250,7 +251,8 @@ class FeatureExtractor(ABC):
                         image_shape: tuple[int, int], 
                         save_path: str | Path, 
                         device: torch.device = "cuda" if torch.cuda.is_available() else "cpu",
-                        mode="nearest_patch"
+                        mode="nearest_patch",
+                        additional_features=None,
                         # mode="mean_patches"
                         ):
         cls._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
@@ -259,7 +261,25 @@ class FeatureExtractor(ABC):
         logger.info(f"Using model {model_name} with mode {mode} for pretrained feature extraction.")
         backbone = cls._available_backbones[model_name]["class"]
         backbone.model_name = model_name
+        backbone.additional_features = additional_features
         return backbone(image_shape, save_path, device=device, mode=mode)
+
+    @classmethod
+    def from_config(cls, config: PretrainedFeatureExtractorConfig, image_shape: tuple[int, int], save_path: str | Path):
+        cls._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
+        if config.model_name not in cls._available_backbones:
+            raise ValueError(f"Model {config.model_name} is not available for feature extraction.")
+        logger.info(f"Using model {config.model_name} with mode {config.mode} for pretrained feature extraction.")
+        backbone = cls._available_backbones[config.model_name]["class"]
+        backbone.model_name = config.model_name
+        backbone.additional_features = config.additional_features
+        return backbone(
+            image_shape, 
+            save_path, 
+            batch_size=config.batch_size, 
+            device=config.device, 
+            mode=config.mode,
+        )
     
     def _set_model_patch_size(self):
         if self.final_grid_size is not None and self.input_size is not None:
@@ -314,17 +334,6 @@ class FeatureExtractor(ABC):
             self.embeddings = all_embeddings
             self._save_features(all_embeddings)
         return self.embeddings
-        # region_embeddings = {}
-        # for n in tqdm(range(0, len(windows), window_size), desc="Extracting region embeddings"):
-        #     self._extract_region_embeddings(region_embeddings, windows[n], n)
-
-        # remaining = len(images) - len(region_embeddings)
-        # logger.debug(f"Remaining frames: {remaining}")
-        # if remaining > 0:
-        #     self._extract_region_embeddings(region_embeddings, windows[-1], len(images) - remaining, remaining)
-
-        # self.embeddings = None  # clear embeddings from memory
-        # return region_embeddings
 
     def _extract_region_embeddings(self, all_frames_embeddings, window, start_index, remaining=None):
         window_coords = window["coords"]

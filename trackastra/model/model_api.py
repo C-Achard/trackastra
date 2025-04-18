@@ -10,12 +10,12 @@ import yaml
 from tqdm import tqdm
 
 from ..data import build_windows, get_features, load_tiff_timeseries
+from ..data import pretrained_features as ft
 from ..tracking import TrackGraph, build_graph, track_greedy
 from ..utils import normalize
 from .model import TrackingTransformer
 from .predict import predict_windows
 from .pretrained import download_pretrained
-from ..data import pretrained_features as ft
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -171,14 +171,17 @@ class Trackastra:
         **kwargs,
     ) -> TrackGraph:
         if self.train_args["features"] == "pretrained_feats":
+            additional_features = self.train_args.get(
+                "pretrained_feats_additional_props", None
+            )
             self.feature_extractor = ft.FeatureExtractor.from_model_name(
                 self.train_args["pretrained_feats_model"],
                 imgs[0].shape[-2:], 
-                save_path=self.imgs_path / f"embeddings",
+                save_path=self.imgs_path / "embeddings",
                 mode=self.train_args["pretrained_feats_mode"],
                 device="cuda" if torch.cuda.is_available() else "cpu",
+                additional_features=additional_features,
             )
-        
         
         predictions = self._predict(imgs, masks, progbar_class=progbar_class)
         track_graph = self._track_from_predictions(predictions, mode=mode, **kwargs)

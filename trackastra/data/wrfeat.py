@@ -752,7 +752,7 @@ def get_features(
         feature_extractor.precompute_region_embeddings(imgs)
         features = [
                     WRPretrainedFeatures.from_pretrained_features(
-                        img=img[np.newaxis], mask=mask[np.newaxis], feature_extractor=feature_extractor, t_start=t
+                        img=img[np.newaxis], mask=mask[np.newaxis], feature_extractor=feature_extractor, t_start=t, additional_properties=feature_extractor.additional_features,
                     )
                     for t, (mask, img) in enumerate(zip(detections, imgs))
                 ]

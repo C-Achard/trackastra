@@ -1317,24 +1317,12 @@ def parse_train_args():
         help="Additional regionprops features to use in addition to pretrained model embeddings",
     )
     parser.add_argument(
-        "--input_proj_dropout",
-        type=float,
-        default=0,
-        help="Dropout for input projection layer",
-    )
-    parser.add_argument(
         "--weight_decay",
         type=float,
         default=0.01,
         help="Weight decay for the AdamW optimizer",
     )
-    parser.add_argument(
-        "--extra_feature_layer",
-        type=str2bool,
-        default=False,
-        help="Use extra feature layer for pretrained model features",
-    )
-    
+
     args, unknown_args = parser.parse_known_args()
 
     # Hack to allow for --input_test

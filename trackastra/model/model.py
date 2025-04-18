@@ -309,8 +309,6 @@ class TrackingTransformer(torch.nn.Module):
             feat_embed_per_dim=feat_embed_per_dim,
             causal_norm=causal_norm,
             attn_dist_mode=attn_dist_mode,
-            extra_feature_layer=extra_feature_layer,
-            input_proj_dropout=input_proj_dropout,
         )
 
         # TODO remove, alredy present in self.config
@@ -318,16 +316,7 @@ class TrackingTransformer(torch.nn.Module):
         # self.feat_dim = feat_dim
         # self.coord_dim = coord_dim
         
-        # Extra layers
-        self.features_proj = nn.Linear(
-            feat_dim, d_model, bias=False
-        ) if extra_feature_layer else nn.Identity()
-        self.input_batch_norm = nn.BatchNorm1d(feat_dim, affine=False) if extra_feature_layer else nn.Identity()
-        self.features_proj_dropout = nn.Dropout(input_proj_dropout) if extra_feature_layer else nn.Identity()
-        ###
         self.proj = nn.Linear(
-            (1 + coord_dim) * pos_embed_per_dim + d_model * feat_embed_per_dim, d_model
-        ) if extra_feature_layer else nn.Linear(
             (1 + coord_dim) * pos_embed_per_dim + feat_dim * feat_embed_per_dim, d_model
         )
         
