@@ -393,11 +393,6 @@ class TrackingTransformer(torch.nn.Module):
             if features is None or features.numel() == 0:
                 features = pos
             else:
-                # Extra layers
-                features = self.input_batch_norm(features.transpose(1, 2)).transpose(1, 2)
-                features = self.features_proj(features)
-                features = self.features_proj_dropout(features)
-                ###
                 features = self.feat_embed(features)
                 features = torch.cat((pos, features), axis=-1)
         
