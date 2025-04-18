@@ -899,8 +899,6 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
-            extra_feature_layer=args.extra_feature_layer,
-            input_proj_dropout=args.input_proj_dropout,
         )
 
         dummy_model_lightning = WrappedLightningModule(
@@ -1041,8 +1039,6 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
-            extra_feature_layer=args.extra_feature_layer,
-            input_proj_dropout=args.input_proj_dropout,
         )
 
     model_lightning = WrappedLightningModule(
