@@ -900,7 +900,7 @@ class EmbeddingsPCACompression:
         self.n_components = n_components
         self.save_path = save_path / "pca_model.pkl" if save_path is not None else None
         self.pca = PCA(n_components=n_components)
-        self.max_frames = 1000
+        self.max_frames = 1500
         self.random_state = 42
         self.pca.random_state = self.random_state
         self.generator = np.random.default_rng(self.random_state)
@@ -967,7 +967,9 @@ class EmbeddingsPCACompression:
             N_samples += emb.shape[0]
             if N_samples > self.max_frames:
                 logger.info(f"Amount of loaded frames exceeds {self.max_frames} limit for PCA computation.")
-            embeddings.append(emb)
+                break
+            else:
+                embeddings.append(emb)
         
         embeddings = np.concatenate(embeddings, axis=0)
         embeddings = embeddings.reshape(-1, embeddings.shape[-1])
