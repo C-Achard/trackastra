@@ -61,6 +61,7 @@ PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.1
     "facebook/sam2.1-hiera-base-plus",  # 256
     "microsam/vit_b_lm",
     "microsam/vit_l_lm",
+    "random"
 ]
 
 
@@ -846,6 +847,27 @@ class MicroSAMFeatures(FeatureExtractor):
         if len(out.shape) == 2:
             out = out.unsqueeze(0)
         return out
-            
+
+@register_backbone("random", 256)
+class RandomFeatures(FeatureExtractor):
+    model_name = "random"
+
+    def __init__(
+        self, 
+        image_size: tuple[int, int],
+        save_path: str | Path,
+        batch_size: int = 4,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        ):
+        super().__init__(image_size, save_path, batch_size, device, mode)
+        self.input_size = 1024
+        self.final_grid_size = 64
+        self.n_channels = 3
+        self.hidden_state_size = 256
+        
+    def _run_model(self, images) -> torch.Tensor:
+        """Extracts embeddings from the model."""
+        return torch.randn(len(images), self.final_grid_size**2, self.hidden_state_size).to(self.device)
 
 FeatureExtractor._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
