@@ -47,6 +47,7 @@ if TYPE_CHECKING:
         PretrainedBackboneType,
         PretrainedFeatsExtractionMode,
         PretrainedFeatureExtractorConfig,
+        EmbeddingsPCACompression,
     )
 
 
@@ -181,6 +182,7 @@ class CTCData(Dataset):
         return_dense: bool = False,
         compress: bool = False,
         pretrained_backbone_config: PretrainedFeatureExtractorConfig | None = None,
+        pca_preprocessor: EmbeddingsPCACompression | None = None,
         **kwargs,
     ) -> None:
         """Args:
@@ -211,6 +213,10 @@ class CTCData(Dataset):
         pretrained_backbone_config (PretrainedFeatureExtractorConfig):
             Configuration for the pretrained backbone.
             If mode is set to "pretrained_feats", this configuration is used to extract features.
+            Ignored otherwise.
+        pca_preprocessor (EmbeddingsPCACompression):
+            PCA preprocessor for the pretrained features.
+            If mode is set to "pretrained_feats", this is used to reduce the dimensionality of the features.
             Ignored otherwise.
         """
         super().__init__()
@@ -294,8 +300,10 @@ class CTCData(Dataset):
         # Pretrained model attributes for feature extraction if specified
         self._pretrained_model_input_size_factor = 1
         self.feature_extractor_input_size = None
+        self.feature_extractor_save_path = None
         self.pretrained_features = None
         self.feature_extractor = None
+        self.pca_preprocessor = pca_preprocessor
 
         start = default_timer()
 
@@ -333,6 +341,9 @@ class CTCData(Dataset):
     
     @pretrained_config.setter
     def pretrained_config(self, config: PretrainedFeatureExtractorConfig):
+        if isinstance(config, dict):
+            from trackastra.data.pretrained_features import PretrainedFeatureExtractorConfig
+            config = PretrainedFeatureExtractorConfig.from_dict(config)
         try:
             self.FEATURES_DIMENSIONS["pretrained_feats"] = config.feat_dim
         except AttributeError as e:
@@ -1178,6 +1189,7 @@ class CTCData(Dataset):
                 for wrf in features:
                     if np.any(np.isnan(wrf.features_stacked)):
                         raise ValueError("NaN in features")
+                    
             elif self.features == "wrfeat":
                 features = joblib.Parallel(n_jobs=8)(
                     joblib.delayed(wrfeat.WRFeatures.from_mask_img)(
@@ -1301,7 +1313,13 @@ class CTCData(Dataset):
         coords0 = np.concatenate((feat.timepoints[:, None], feat.coords), axis=-1)
         coords0 = torch.from_numpy(coords0).float()
         assoc_matrix = torch.from_numpy(assoc_matrix.astype(np.float32))
-        features = torch.from_numpy(feat.features_stacked).float()
+        if self.pca_preprocessor is not None:
+            features = self.pca_preprocessor.transform(feat.features_stacked)
+        else:
+            features = feat.features_stacked
+        features = torch.from_numpy(features).float()
+        
+        
         labels = torch.from_numpy(feat.labels).long()
         timepoints = torch.from_numpy(feat.timepoints).long()
     
@@ -1356,10 +1374,11 @@ class CTCData(Dataset):
         from trackastra.data.pretrained_features import (
             FeatureExtractor,
         )
+        self.feature_extractor_save_path = self.pretrained_config.save_path / f"embeddings/{img_folder_name}"
         self.feature_extractor = FeatureExtractor.from_model_name(
             self.pretrained_config.model_name,
             img_shape, 
-            save_path=self.pretrained_config.save_path / f"embeddings/{img_folder_name}",
+            save_path=self.feature_extractor_save_path,
             mode=self.pretrained_config.mode,
             device=self.pretrained_config.device
         )

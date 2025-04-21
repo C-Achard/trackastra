@@ -3,7 +3,7 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, List
 
 import joblib
 import numpy as np
@@ -118,7 +118,11 @@ class PretrainedFeatureExtractorConfig:
         Specify the device to use for the model.
         If not set and "pretrained_feats" is used, the device is automatically set by default to "cuda", "mps" or "cpu" as available.
     additional_features (str):
-        Specify any additional features (from regionprops) to include in the extraction process. See WRFeat documentation for available features.
+        Specify any additional features (from regionprops) to include in the extraction process. See WRFeat documentation for available features. Unused if None.
+    pca_components (int):
+        Specify the number of PCA components to use for dimensionality reduction of the features. Unused if None.
+    pca_preprocessor_path (str | Path):
+        Specify the path to the pickled PCA preprocessor. This is used to transform the features to a reduced PCA feature space.
     """
     model_name: PretrainedBackboneType
     save_path: str | Path = None
@@ -127,6 +131,8 @@ class PretrainedFeatureExtractorConfig:
     device: str | None = None
     feat_dim: int = None
     additional_features: str | None = None  # for regionprops features
+    pca_components: int = None  # for PCA reduction of the features
+    pca_preprocessor_path: str | Path = None  # for PCA preprocessor path
     
     def __post_init__(self):
         self._guess_device()
@@ -138,9 +144,11 @@ class PretrainedFeatureExtractorConfig:
         self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
         if self.additional_features is not None:
             self.feat_dim += CTCData.FEATURES_DIMENSIONS[self.additional_features][2] + 1  # TODO if this ever accepts 3D data this will be incorrect
-
             if self.additional_features not in CTCData.FEATURES_DIMENSIONS:
                 raise ValueError(f"Additional feature {self.additional_features} is not valid.")
+        if self.pca_components is not None:
+            self.feat_dim = self.pca_components
+
         
     def _guess_device(self):
         if self.device is None:
@@ -866,8 +874,103 @@ class RandomFeatures(FeatureExtractor):
         self.n_channels = 3
         self.hidden_state_size = 256
         
+        self._seed = 42
+        self._generator = torch.Generator(device=device).manual_seed(self._seed)
+        
     def _run_model(self, images) -> torch.Tensor:
         """Extracts embeddings from the model."""
-        return torch.randn(len(images), self.final_grid_size**2, self.hidden_state_size).to(self.device)
+        # Normal distribution
+        # return torch.randn(len(images), self.final_grid_size**2, self.hidden_state_size, generator=self._generator).to(self.device)
+        # Uniform distribution
+        feats = torch.rand(len(images), self.final_grid_size**2, self.hidden_state_size, generator=self._generator).to(self.device)
+        feats = feats * 4 - 2  # [-2, 2]
+        return feats
 
 FeatureExtractor._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
+
+# Embeddings post-processing
+
+from sklearn.decomposition import PCA
+import pickle
+
+class EmbeddingsPCACompression:
+    
+    def __init__(self, original_model_name: str, n_components: int = 15, save_path: str | Path = None):
+        self.original_model_name = original_model_name
+        self.n_components = n_components
+        self.save_path = save_path / "pca_model.pkl" if save_path is not None else None
+        self.pca = PCA(n_components=n_components)
+        self.max_frames = 1000
+        self.random_state = 42
+        self.pca.random_state = self.random_state
+        self.generator = np.random.default_rng(self.random_state)
+    
+    @classmethod
+    def from_pretrained_cfg(cls, cfg: PretrainedFeatureExtractorConfig):
+        return cls(
+            original_model_name=cfg.model_name.replace("/", "-"),
+            n_components=cfg.pca_components,
+            save_path=cfg.pca_preprocessor_path
+        )
+    
+    def fit(self, X: np.ndarray):
+        """Fits the PCA model to the embeddings."""
+        self.pca.fit(X)
+        
+        if self.save_path is not None:
+            if not self.save_path.parents[0].exists():
+                self.save_path.parents[0].mkdir(parents=True, exist_ok=True)
+            with open(self.save_path, 'wb') as f:
+                pickle.dump(self.pca, f)
+        
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        """Transforms the embeddings using the fitted PCA model."""
+        return self.pca.transform(X)
+    
+    def load_from_file(self, path: str | Path):
+        """Loads the PCA model from a file."""
+        if isinstance(path, str):
+            path = Path(path)
+        path = path / "pca_model.pkl" if path.suffix != ".pkl" else path
+        with open(path, 'rb') as f:
+            self.pca = pickle.load(f)
+        logger.info(f"Loaded PCA model from {path}.")
+    
+    def fit_on_embeddings(self, embeddings_source_folders: List[str | Path]):
+        """Fits the PCA model to the embeddings loaded from a file."""
+        
+        embeddings = []
+        N_samples = 0
+        
+        embeddings_paths = []
+        for folder in embeddings_source_folders:
+            for file in Path(folder).rglob("*.npy"):
+                if self.original_model_name in file.name:
+                    embeddings_paths.append(file)
+        
+        if len(embeddings_paths) == 0:
+            return
+        
+        embeddings_paths = self.generator.permutation(embeddings_paths)
+        logger.info(f"Fitting PCA model on {len(embeddings_paths)} embeddings files.")
+        logger.info(f"Files :")
+        for p in embeddings_paths:
+            logger.info(f" - {p}")
+        logger.info("*" * 50)
+        
+        for path in embeddings_paths:
+            if isinstance(path, str):
+                path = Path(path)
+            if not path.exists():
+                raise FileNotFoundError(f"File {path} does not exist.")
+            emb = np.load(path)
+            N_samples += emb.shape[0]
+            if N_samples > self.max_frames:
+                logger.info(f"Amount of loaded frames exceeds {self.max_frames} limit for PCA computation.")
+            embeddings.append(emb)
+        
+        embeddings = np.concatenate(embeddings, axis=0)
+        embeddings = embeddings.reshape(-1, embeddings.shape[-1])
+        self.fit(embeddings)
+        logger.info(f"Fitted PCA model with {self.n_components} components on {N_samples} frames.")
+        
