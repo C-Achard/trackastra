@@ -246,13 +246,7 @@ class WRPretrainedFeatures(WRFeatures):
     ):
         super().__init__(coords, labels, timepoints, features)
         self.additional_properties = additional_properties
-    
-    @classmethod
-    def from_mask_img():
-        raise NotImplementedError(
-            "Please use from_pretrained_features instead of from_mask_img"
-        )
-    
+        
     @classmethod
     def from_pretrained_features(
         cls,
