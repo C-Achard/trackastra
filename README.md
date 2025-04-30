@@ -113,7 +113,54 @@ v.add_labels(masks_tracked)
 v.add_tracks(data=napari_tracks, graph=napari_tracks_graph)
 ```
 
-### Training a model on your own data
+<h3>
+  <!-- <img src="https://camo.githubusercontent.com/5d68a2c2564bc50ca534f939922482779202499b14901e0671d5362def6ff59f/68747470733a2f2f696d6167656a2e6e65742f6d656469612f69636f6e732f747261636b6d6174652e706e67" alt="icon" height="20" style="vertical-align: middle;"/> -->
+  <img src="https://fiji.sc/site/logo.png" alt="icon" height="20" style="vertical-align: middle;"/>
+  Fiji (via TrackMate)
+</h3>
+
+Trackastra is one of the available trackers in [TrackMate](https://imagej.net/plugins/trackmate/). For installation and usage instructions take a look at this [tutorial](
+https://imagej.net/plugins/trackmate/trackers/trackmate-trackastra).
+
+<h3>
+  <img src="docs/icons/docker-mark-blue.png" alt="icon" height="20" style="vertical-align: middle;"/>
+  Docker images
+</h3>
+
+Some of our models are available as docker images on [Docker Hub](https://hub.docker.com/r/bentaculum/trackastra-track/tags). Currently, we only provide CPU-based docker images.
+
+Track within a docker container with the following command, filling the `<VARIABLES>`:
+
+```bash
+docker run -it -v <LOCAL_DATA_DIR>:/data -v <LOCAL_RESULTS_DIR>:/results bentaculum/trackastra-track:<MODEL_TAG> --input_test /data/<DATASET_IN_CTC_FORMAT> --detection_folder <TRA/SEG/ETC>"
+```
+<details>
+<summary>📄 <i>Show example with Cell Tracking Challenge model:</i></summary>
+<br>
+
+```bash
+wget http://data.celltrackingchallenge.net/training-datasets/Fluo-N2DH-GOWT1.zip 
+chmod -R 775 Fluo-N2DH-GOWT1
+docker pull bentaculum/trackastra-track:model.ctc-linking.ilp 
+docker run -it -v ./:/data -v ./:/results bentaculum/trackastra-track:model.ctc-linking.ilp --input_test data/Fluo-N2DH-GOWT1/01 --detection_folder TRA
+```
+
+</details>
+
+<h3>
+  <img src="docs/icons/terminal-cli-fill.256x224.png" alt="icon" height="20" style="vertical-align: middle;"/>
+  Command Line Interface
+</h3>
+After [installation](#installation), simply run in your terminal 
+
+```bash
+trackastra track --help
+```
+
+to build a command for tracking directly from images and corresponding instance segmentation masks saved on disk as two series of TIF files.
+
+
+## Usage: Training a model on your own data
 
 To run an example
 - clone this repository and got into the scripts directory with `cd trackastra/scripts`.
