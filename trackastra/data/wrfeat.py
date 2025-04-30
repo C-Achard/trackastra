@@ -397,9 +397,6 @@ class WRBaseAugmentation(ABC):
                 logger.warning(f"Infs found in {k} after {self.__class__.__name__} augmentation")
             if np.any(np.all(f == 0, axis=-1)):
                 logger.warning(f"Empty {k} after {self.__class__.__name__} augmentation")
-        
-        return True
-
 
 class WRRandomFlip(WRBaseAugmentation):
     """Random flip augmentation.
@@ -639,7 +636,7 @@ class WRAugmentationPipeline:
             feats = aug(feats)
         
         # logger.debug(f"Coords : {feats.coords}")
-            
+        
         return feats
 
 # Factory functions
@@ -755,7 +752,7 @@ def get_features(
                 )
             )
     elif features == "pretrained_feats":
-        feature_extractor.precompute_region_embeddings(imgs)
+        feature_extractor.precompute_image_embeddings(imgs)
         features = [
                     WRPretrainedFeatures.from_pretrained_features(
                         img=img[np.newaxis], mask=mask[np.newaxis], feature_extractor=feature_extractor, t_start=t, additional_properties=feature_extractor.additional_features,

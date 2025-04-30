@@ -36,7 +36,7 @@ from trackastra.data.features import (
 from trackastra.data.matching import matching
 
 # from ..utils import blockwise_sum, normalize
-from trackastra.utils import blockwise_sum, normalize
+from trackastra.utils import blockwise_sum, normalize, masks2properties
 
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.INFO)
@@ -130,8 +130,8 @@ class CTCData(Dataset):
     # Amount of feature per mode per dimension
     FEATURES_DIMENSIONS: ClassVar = {
         "wrfeat": {
-            2: 8,
-            3: 12,
+            2: 7,
+            3: 11,
         },
         "regionprops": {
             2: 7,
@@ -633,7 +633,7 @@ class CTCData(Dataset):
         logger.debug(f"Loaded array of shape {x.shape} from {folder}")
         return x
 
-    def _masks2properties(self, masks):
+    def _masks2properties(self, masks, return_props_by_time=False):
         """Turn label masks into lists of properties, sorted (ascending) by time and label id.
 
         Args:
@@ -644,38 +644,7 @@ class CTCData(Dataset):
             ts: List of timepoints
             coords: List of coordinates
         """
-        # Get coordinates, timepoints, and labels of detections
-        labels = []
-        ts = []
-        coords = []
-        properties_by_time = dict()
-        assert len(self.imgs) == len(masks)
-        for _t, frame in tqdm(
-            enumerate(masks),
-            # total=len(detections),
-            leave=False,
-            desc="Loading masks and properties",
-        ):
-            regions = regionprops(frame)
-            t_labels = []
-            t_ts = []
-            t_coords = []
-            for _r in regions:
-                t_labels.append(_r.label)
-                t_ts.append(_t)
-                centroid = np.array(_r.centroid).astype(int)
-                t_coords.append(centroid)
-
-            properties_by_time[_t] = dict(coords=t_coords, labels=t_labels)
-            labels.extend(t_labels)
-            ts.extend(t_ts)
-            coords.extend(t_coords)
-
-        labels = np.array(labels, dtype=int)
-        ts = np.array(ts, dtype=int)
-        coords = np.array(coords, dtype=int)
-
-        return labels, ts, coords, properties_by_time
+        return masks2properties(self.imgs, masks, return_props_by_time=return_props_by_time)
 
     def _load_tracklet_links(self, folder: Path) -> pd.DataFrame:
         df = pd.read_csv(
@@ -754,7 +723,7 @@ class CTCData(Dataset):
                     det_ts,
                     det_coords,
                     det_properties_by_time,
-                ) = self._masks2properties(det_masks)
+                ) = self._masks2properties(det_masks, return_props_by_time=True)
 
                 det_gt_matching = {
                     t: {_l: _l for _l in det_properties_by_time[t]["labels"]}
@@ -776,7 +745,7 @@ class CTCData(Dataset):
                     det_ts,
                     det_coords,
                     det_properties_by_time,
-                ) = self._masks2properties(det_masks)
+                ) = self._masks2properties(det_masks, return_props_by_time=True)
 
                 # FIXME matching can be slow for big images
                 # raise NotImplementedError("Matching not implemented for 3d version")

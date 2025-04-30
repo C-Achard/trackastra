@@ -2,8 +2,11 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Literal, List
+import h5py
+import json
 
 import joblib
 import numpy as np
@@ -24,6 +27,7 @@ from transformers import (
 )
 
 from trackastra.data import CTCData
+from trackastra.utils import masks2properties, add_timepoints_to_coords
 
 MICRO_SAM_AVAILABLE = False
 try:
@@ -103,6 +107,154 @@ def average_time_decorator(func):
     return wrapper
 
 
+def percentile_norm(b):
+    for i, im in enumerate(b):
+        p1, p99 = np.percentile(im, (1, 99.8))
+        b[i] = (im - p1) / (p99 - p1)
+        b[i] = np.clip(b[i], 0, 1)
+    return b
+
+# Augmentations for pre-trained models
+
+from torchvision.transforms import v2 as transforms
+from torchvision import tv_tensors
+
+class BaseAugmentation(ABC):
+    """Base class for windowed region augmentations."""
+    def __init__(self, p: float = 0.5, rng_seed = None):
+        self._p = p
+        self._rng = np.random.RandomState(rng_seed)
+        self.applied_record = {}
+
+    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
+        aug = self._get_aug()
+        if self._p is None or self._rng.rand() < self._p:
+            return aug(images, masks)
+        return images, masks
+    
+    @abstractmethod
+    def _get_aug(self) -> transforms.Compose:
+        raise NotImplementedError()
+    
+class FlipAugment(BaseAugmentation):
+    def __init__(self, p_horizontal: float = 0.5, p_vertical: float = 0.5, rng_seed = None):
+        super().__init__(p=None, rng_seed=rng_seed)
+        self._p_horizontal = p_horizontal
+        self._p_vertical = p_vertical
+    
+    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
+        if self._rng.rand() < self._p_horizontal:
+            images = transforms.functional.hflip(images)
+            masks = transforms.functional.hflip(masks)
+            self.applied_record["hflip"] = True
+        else:
+            self.applied_record["hflip"] = False
+        if self._rng.rand() < self._p_vertical:
+            images = transforms.functional.vflip(images)
+            masks = transforms.functional.vflip(masks)
+            self.applied_record["vflip"] = True
+        else:
+            self.applied_record["vflip"] = False
+        return images, masks
+    
+    def _get_aug(self) -> transforms.Compose:
+        raise NotImplementedError("Use __call__ instead.")
+        
+class RotAugment(BaseAugmentation):
+    
+    def __init__(self, p: float = 0.5, degrees: int = 90, rng_seed = None):
+        super().__init__(p, rng_seed=rng_seed)
+        self.degrees = degrees
+    
+    def __call__(self, images, masks):
+        aug = self._get_aug()
+        if self._rng.rand() > self._p:
+            return images, masks
+        images = aug(images)
+        masks = aug(masks)
+        return images, masks
+    
+    def _get_aug(self):
+        angle = self._rng.randint(1, 4) * self.degrees # sample from 90, 180, 270
+        self.applied_record["rotation"] = angle
+        return partial(transforms.functional.rotate, angle=angle, expand=True)
+    
+class BrightnessJitter(BaseAugmentation):
+    
+    def __init__(self, bright_shift: float = 0.5, contrast_shift: float = 0.5, rng_seed = None):
+        super().__init__(p=None, rng_seed=rng_seed)
+        self._b_shift = bright_shift
+        self._c_shift = contrast_shift
+    
+    def _get_aug(self):
+        if self._b_shift is not None:
+            bright = self._rng.uniform(0, self._b_shift)
+        else:
+            bright = None
+        self.applied_record["brightness_jitter"] = bright
+        if self._c_shift is not None:
+            contrast = self._rng.uniform(0, self._c_shift)
+        else:
+            contrast = None
+        self.applied_record["contrast_jitter"] = contrast
+        return transforms.ColorJitter(brightness=bright, contrast=contrast)
+
+class PretrainedAugmentations:
+    """Augmentation pipeline to get augmented copies of model embeddings."""
+    def __init__(self, rng_seed=None, normalize=True):
+        self.aug_record = {}
+        self.aug_list = [
+            BrightnessJitter(bright_shift=0.75, contrast_shift=0.75, rng_seed=rng_seed),
+            FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
+            RotAugment(p=0.5, degrees=90, rng_seed=rng_seed),
+        ]
+        self._aug = transforms.Compose(
+            self.aug_list
+        )
+        self.normalize = normalize
+
+    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask, normalize=True) -> tuple[torch.Tensor, tv_tensors.Mask, dict]:
+        """Applies the augmentations to the images."""
+
+        images, masks = self.preprocess(images, masks, normalize=normalize)
+        
+        images = torch.unsqueeze(images, dim=1)  # add channel dimension (T, C, H, W) for augmentation
+        masks = torch.unsqueeze(masks, dim=1)  # add channel dimension (T, C, H, W) for augmentation
+        
+        images, masks =  self._aug(images, masks)
+        # NOTE : most models do require 3 channels, but this will be done in FeatureExtractor, so the output is squeezed
+        return images.squeeze(), masks.squeeze(), self.gather_records()
+    
+    def preprocess(self, images, masks, normalize=None):
+        if not len(images.shape) == 3:
+            raise ValueError(f"Images must be tensor of shape (T, H, W), got {len(images.shape)}D tensor.")
+        if not len(masks.shape) == 3:
+            raise ValueError(f"Masks must be tensor of shape (T, H, W), got {len(masks.shape)}D tensor.")
+        
+        if not isinstance(images, torch.Tensor):
+            try:
+                images = torch.tensor(images, dtype=torch.float32)
+            except Exception as e:
+                raise ValueError(f"Failed to convert images to tensor: {e}")
+        if not isinstance(masks, tv_tensors.Mask):
+            try:
+                masks = tv_tensors.Mask(masks, dtype=torch.int64)
+            except Exception as e:
+                raise ValueError(f"Failed to convert masks to tensor: {e}")
+        
+        normalize = normalize if normalize is not None else self.normalize
+        if normalize:
+            images = percentile_norm(images)
+            
+        return images, masks
+    
+    def gather_records(self):
+        """Gathers the applied augmentation records."""
+        self.aug_record = {}
+        for aug in self.aug_list:
+            self.aug_record.update(aug.applied_record)
+        return self.aug_record
+
 @dataclass
 class PretrainedFeatureExtractorConfig:
     """model_name (str):
@@ -117,6 +269,8 @@ class PretrainedFeatureExtractorConfig:
     device (str):
         Specify the device to use for the model.
         If not set and "pretrained_feats" is used, the device is automatically set by default to "cuda", "mps" or "cpu" as available.
+    n_augmented_copies (int):
+        How many augmented copies of the embeddings to create. If 0, only the original embeddings are saved. Creates n+1 embeddings entries total. 
     additional_features (str):
         Specify any additional features (from regionprops) to include in the extraction process. See WRFeat documentation for available features. Unused if None.
     pca_components (int):
@@ -144,6 +298,7 @@ class PretrainedFeatureExtractorConfig:
         self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
         if self.additional_features is not None:
             self.feat_dim += CTCData.FEATURES_DIMENSIONS[self.additional_features][2] + 1  # TODO if this ever accepts 3D data this will be incorrect
+            # TODO also figure out why the dimensions require +1 to be correct
             if self.additional_features not in CTCData.FEATURES_DIMENSIONS:
                 raise ValueError(f"Additional feature {self.additional_features} is not valid.")
         if self.pca_components is not None:
@@ -222,6 +377,8 @@ class FeatureExtractor(ABC):
         self.additional_features = None
         # Saving parameters
         self.save_path: str | Path = save_path
+        self.do_save = True
+        self.force_recompute = False
         self.embeddings = None
         
         if not isinstance(self.save_path, Path):
@@ -282,13 +439,26 @@ class FeatureExtractor(ABC):
         backbone = cls._available_backbones[config.model_name]["class"]
         backbone.model_name = config.model_name
         backbone.additional_features = config.additional_features
+        
         return backbone(
             image_shape, 
             save_path, 
             batch_size=config.batch_size, 
             device=config.device, 
             mode=config.mode,
+            n_augmented_copies=config.n_augmented_copies,
+            aug_pipeline=PretrainedAugmentations() if config.n_augmented_copies > 0 else None,
         )
+        
+    def clear_model(self):
+        """Clears the model from memory."""
+        if self.model is not None:
+            del self.model
+            self.model = None
+            torch.cuda.empty_cache()
+            logger.info("Model cleared from memory.")
+        else:
+            logger.warning("No model to clear from memory.")
     
     def _set_model_patch_size(self):
         if self.final_grid_size is not None and self.input_size is not None:
@@ -296,7 +466,7 @@ class FeatureExtractor(ABC):
             # if not self.input_size % self.final_grid_size == 0:
             # raise ValueError("The input size must be divisible by the final grid size.")
 
-    def forward(
+    def compute_region_features(
             self, 
             coords,
             masks=None, 
@@ -329,9 +499,9 @@ class FeatureExtractor(ABC):
         assert feats.shape == (len(coords), self.hidden_state_size)
         return feats  # (n_regions, embedding_size)
     
-    def precompute_region_embeddings(self, images):  # , windows, window_size):
+    def precompute_image_embeddings(self, images):  # , windows, window_size):
         """Precomputes embeddings for all images."""
-        missing = self._check_existing_embeddings(len(images))
+        missing = self._check_missing_embeddings()
         all_embeddings = torch.zeros(len(images), self.final_grid_size**2, self.hidden_state_size, device=self.device)
         if missing:
             for ts, batches in tqdm(self._prepare_batches(images), total=len(images) // self.batch_size, desc="Computing embeddings"):
@@ -370,7 +540,7 @@ class FeatureExtractor(ABC):
         coords_txy = np.concatenate((timepoints[:, None], coords), axis=-1)
         if coords_txy.shape[0] != tot_regions:
             raise RuntimeError(f"Number of coords ({coords_txy.shape[0]}) does not match the number of coordinates ({timepoints.shape[0]}).")
-        features = self.forward(
+        features = self.compute_region_features(
             masks=masks,
             coords=coords_txy,
             timepoints=timepoints,
@@ -388,13 +558,9 @@ class FeatureExtractor(ABC):
         pass
     
     def _normalize_batch(self, b):
-        for i, im in enumerate(b):
-            # b[i] = (im - im.min()) / (im.max() - im.min())
-            p1, p99 = np.percentile(im, (1, 99.8))
-            b[i] = (im - p1) / (p99 - p1)
-            b[i] = np.clip(b[i], 0, 1)
-            if self.rescale_batches:
-                b[i] = b[i] * 255.0
+        b = percentile_norm(b)
+        if self.rescale_batches:
+            b = b * 255.0
         return b
     
     def _prepare_batches(self, images):
@@ -586,6 +752,8 @@ class FeatureExtractor(ABC):
         """Saves the features to disk."""
         # save_path = self.save_path / f"{timepoint}_{self.model_name_path}_features.npy"
         self.embeddings = features
+        if not self.do_save:
+            return
         save_path = self.save_path / f"{self.model_name_path}_features.npy"
         np.save(save_path, features.cpu().numpy())
         assert save_path.exists(), f"Failed to save features to {save_path}"
@@ -614,8 +782,13 @@ class FeatureExtractor(ABC):
         else:
             return self.embeddings
    
-    def _check_existing_embeddings(self, n_images):
-        """Checks if embeddings for the model already exist."""
+    def _check_missing_embeddings(self):
+        """Checks if embeddings for the model already exist or are missing.
+        
+        Returns whether the embeddings need to be recomputed.
+        """
+        if self.force_recompute:
+            return True
         try:
             features = self._load_features()
         except FileNotFoundError:
@@ -626,6 +799,203 @@ class FeatureExtractor(ABC):
             logger.info(f"Embeddings for {self.model_name} already exist. Skipping embedding computation.")
         return False
 
+
+class FeatureExtractorAugWrapper:
+    """Wrapper for the FeatureExtractor class to apply augmentations."""
+    def __init__(
+            self,
+            extractor: FeatureExtractor,
+            augmenter: PretrainedAugmentations, 
+            n_aug: int = 1
+        ):
+        self.extractor = extractor
+        self.n_aug = n_aug
+        self.aug_pipeline = augmenter
+        self.all_aug_features = {}  # n_aug -> {aug_id: {applied_augs, data}}
+        # data -> {t: {lab: {"coords": coords, "features": features}}}
+        
+        self.extractor.force_recompute = True
+        self.extractor.do_save = False  # do not save intermediate features (augmented image embeddings)
+        # instead, we will save the augmented features + coordinates on a per-object basis in an HDF5 file
+
+        self.save_path = None
+        self.force_recompute = False
+        
+    def _get_save_path(self):
+        root_path = self.extractor.save_path / "aug"
+        if not root_path.exists():
+            root_path.mkdir(parents=True, exist_ok=True)
+        self.save_path = root_path / f"{self.extractor.model_name_path}_aug.h5"
+        
+    def _check_existing(self):
+        """Checks if an h5 file already exists, and which augmentations are already saved."""
+        if not self.save_path.exists() or self.force_recompute:
+            return False, None, None
+        with h5py.File(self.save_path, "r") as f:
+            existing_augs = list(f.keys())
+            features_dict = self.load_all_features()
+        return True, existing_augs, features_dict
+
+    def _compute(self, images, masks):
+        """Computes the features for the images and masks."""
+        self.extractor.precompute_image_embeddings(images)
+        labels, ts, coords = masks2properties(images.cpu().numpy(), masks.cpu().numpy())
+        coords = add_timepoints_to_coords(coords, ts)
+        original_features = self.extractor.compute_region_features(coords, masks, ts, labels)
+        feat_dict = self._create_feat_dict(labels, ts, coords, original_features)
+        return feat_dict
+    
+    def _compute_original(self, images, masks):
+        """Computes the original features for the images and masks."""
+        images, masks = self.aug_pipeline.preprocess(images, masks)
+        orig_feat_dict = self._compute(images, masks)
+        return orig_feat_dict
+    
+    def _compute_augmented(self, images, masks):
+        images, masks = self.aug_pipeline.preprocess(images, masks)
+        aug_images, aug_masks, aug_record = self.aug_pipeline(images, masks)
+        
+        im_shape, masks_shape = aug_images.shape, aug_masks.shape
+        assert im_shape == masks_shape, f"Augmented images shape {im_shape} does not match augmented masks shape {masks_shape}."
+        if im_shape[-2:] != self.extractor.orig_image_size:
+            self.extractor.orig_image_size = im_shape[-2:]
+            
+        aug_feat_dict = self._compute(images, masks)
+        return aug_feat_dict, aug_record
+        
+    def compute_all_features(self, images, masks) -> dict:
+        """Augments the images and masks, computes the embeddings, and saves features incrementally."""
+        # check existing features
+        present, existing_augs, existing_features_dict = self._check_existing()
+        if present:
+            logger.info(f"Augmented features already exist at {self.save_path}.")
+            if len(existing_augs) == self.n_aug+1:
+                logger.info(f"All {self.n_aug} augmentations + original already exist. Loading existing features.")
+                self.all_aug_features = existing_features_dict
+                return self.all_aug_features
+            else:
+                logger.info("No existing augmentations found.")
+        existing_aug_ids = [int(aug.split("_")[-1]) for aug in existing_augs]        
+        
+        if 0 not in existing_aug_ids:
+            orig_feat_dict = self._compute_original(images, masks)
+        else:
+            logger.info("Original features already exist. Skipping computation for original features.")
+            orig_feat_dict = existing_features_dict[0]["data"]
+            
+        self.all_aug_features = {
+            0: {
+                "data": orig_feat_dict,
+            }
+        }
+        if not 0 in existing_aug_ids:
+            self._save_features(0, self.all_aug_features[0])
+        
+        self.aug_pipeline.normalize = False  # do not re-normalize the images
+        for n in range(self.n_aug):
+            if n + 1 in existing_aug_ids:
+                logger.info(f"Augmentation {n + 1} already exists. Skipping computation.")
+                aug_feat_dict = existing_features_dict[n + 1]["data"]
+                aug_record = existing_features_dict[n + 1]["applied_augs"]
+            else:
+                aug_feat_dict, aug_record = self._compute_augmented(images, masks)
+            
+            self.all_aug_features[n + 1] = {
+                "applied_augs": aug_record,
+                "data": aug_feat_dict,
+            }
+            if not n + 1 in existing_aug_ids:
+                self._save_features(n + 1, self.all_aug_features[n + 1])
+
+        return self.all_aug_features
+
+    def _create_feat_dict(self, labels, ts, coords, features):
+        """Creates a dictionary with the augmented features."""
+        aug_feat_dict = {}
+        features = features.cpu().numpy()
+        for i, (t, lab) in enumerate(zip(ts, labels)):
+            t = int(t)
+            lab = int(lab)
+            if t not in aug_feat_dict:
+                aug_feat_dict[t] = {}
+            aug_feat_dict[t][lab] = {
+                "coords": coords[i],
+                "features": features[i],
+            }
+        return aug_feat_dict
+
+    def _save_features(self, aug_id: int, aug_data: dict):
+        """Saves the features for a specific augmentation to disk as HDF5."""
+        root_path = self.extractor.save_path / "aug"
+        if not root_path.exists():
+            root_path.mkdir(parents=True, exist_ok=True)
+        self.save_path = root_path / f"{self.extractor.model_name_path}_aug.h5"
+
+        with h5py.File(self.save_path, "a") as f:
+            # Check if the group already exists and delete it if necessary
+            group_name = f"augmentation_{aug_id}"
+            if group_name in f:
+                del f[group_name]
+            
+            group = f.create_group(group_name)
+            # Store applied augmentations as attributes
+            try:
+                group.attrs["applied_augs"] = json.dumps(aug_data["applied_augs"])
+            except KeyError:
+                pass
+
+            # Save data for each timepoint and label
+            for t, data in aug_data["data"].items():
+                t_group = group.create_group(f"timepoint_{t}")
+                for lab, lab_data in data.items():
+                    lab_group = t_group.create_group(f"label_{lab}")
+                    lab_group.create_dataset("coords", data=lab_data["coords"], compression="gzip")
+                    lab_group.create_dataset("features", data=lab_data["features"], compression="gzip")
+
+        logger.info(f"Augmented features for augmentation {aug_id} saved to {self.save_path}.")
+
+    def load_all_features(self) -> dict:
+        """Loads all features from disk."""
+        if not self.save_path.exists():
+            raise FileNotFoundError(f"Path {self.save_path} does not exist.")
+        
+        features = FeatureExtractorAugWrapper.load_features(self.save_path)
+        self.all_aug_features = features
+        return features
+
+    @staticmethod
+    def load_features(path: str | Path) -> dict:
+        """Loads the features for a specific augmentation from disk."""
+        if not isinstance(path, Path):
+            path = Path(path)
+        if not path.exists():
+            raise FileNotFoundError(f"Path {path} does not exist.")
+        
+        features = {}
+        with h5py.File(path, "r") as f:
+            for aug_id, group in f.items():
+                aug_id = int(aug_id.split("_")[-1])
+                try:
+                    applied_augs = json.loads(group.attrs["applied_augs"])
+                except KeyError:
+                    applied_augs = None
+                data = {}
+                for t, t_group in group.items():
+                    t = int(t.split("_")[-1])
+                    data[t] = {}
+                    for lab, lab_group in t_group.items():
+                        lab = int(lab.split("_")[-1])
+                        data[t][lab] = {
+                            "coords": np.array(lab_group["coords"]),
+                            "features": np.array(lab_group["features"]),
+                        }
+                features[aug_id] = {
+                    "applied_augs": applied_augs,
+                    "data": data,
+                }
+        return features
+       
+    
 
 ##############
 @register_backbone("facebook/hiera-tiny-224-hf", 768)
@@ -887,6 +1257,7 @@ class RandomFeatures(FeatureExtractor):
         return feats
 
 FeatureExtractor._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
+
 
 # Embeddings post-processing
 
