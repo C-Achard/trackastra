@@ -16,6 +16,7 @@ from timeit import default_timer
 
 import configargparse
 import git
+import humanize
 import lightning as pl
 import numpy as np
 import psutil
@@ -25,7 +26,6 @@ import yaml
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from lightning.pytorch.profilers import PyTorchProfiler
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
-import humanize
 from skimage.morphology import binary_dilation, disk
 from torch.optim.lr_scheduler import LRScheduler
 from torchvision.utils import make_grid
@@ -1115,9 +1115,9 @@ def train(args):
         strategy = DDPStrategy(process_group_backend="gloo")
 
     trainer = pl.Trainer(
-        accelerator="auto",
+        accelerator="gpu" if torch.cuda.is_available() else "cpu",
         strategy=strategy,
-        devices=n_gpus,
+        devices=n_gpus if torch.cuda.is_available() else 1,
         precision="16-mixed" if args.mixedp else 32,
         logger=train_logger,
         num_nodes=1,
