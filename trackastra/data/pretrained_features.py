@@ -821,6 +821,8 @@ class FeatureExtractorAugWrapper:
         self.save_path = None
         self.force_recompute = False
         
+        self._debug_view = None
+        
     def _get_save_path(self):
         root_path = self.extractor.save_path / "aug"
         if not root_path.exists():
@@ -829,20 +831,29 @@ class FeatureExtractorAugWrapper:
         
     def _check_existing(self):
         """Checks if an h5 file already exists, and which augmentations are already saved."""
-        if not self.save_path.exists() or self.force_recompute:
+        if self.save_path is None or not self.save_path.exists() or self.force_recompute:
             return False, None, None
         with h5py.File(self.save_path, "r") as f:
             existing_augs = list(f.keys())
             features_dict = self.load_all_features()
         return True, existing_augs, features_dict
+    
 
     def _compute(self, images, masks):
         """Computes the features for the images and masks."""
-        self.extractor.precompute_image_embeddings(images)
+        embs = self.extractor.precompute_image_embeddings(images)
+        if self._debug_view is not None:
+            embs = embs.cpu().numpy()
+            print(f"Embeddings shape: {embs.shape}")
+            embs = embs.reshape(-1, self.extractor.final_grid_size, self.extractor.final_grid_size, self.extractor.hidden_state_size)
+            embs = np.moveaxis(embs, 3, 0)
+            self._debug_view.add_image(embs, name="Embeddings", colormap="inferno")
+            self._debug_view.add_image(images.cpu().numpy(), name="Images", colormap="viridis")
+            self._debug_view.add_labels(masks.cpu().numpy(), name="Masks")
         labels, ts, coords = masks2properties(images.cpu().numpy(), masks.cpu().numpy())
         coords = add_timepoints_to_coords(coords, ts)
-        original_features = self.extractor.compute_region_features(coords, masks, ts, labels)
-        feat_dict = self._create_feat_dict(labels, ts, coords, original_features)
+        feats = self.extractor.compute_region_features(coords, masks, ts, labels)
+        feat_dict = self._create_feat_dict(labels, ts, coords, feats)
         return feat_dict
     
     def _compute_original(self, images, masks):
@@ -860,7 +871,7 @@ class FeatureExtractorAugWrapper:
         if im_shape[-2:] != self.extractor.orig_image_size:
             self.extractor.orig_image_size = im_shape[-2:]
             
-        aug_feat_dict = self._compute(images, masks)
+        aug_feat_dict = self._compute(aug_images, aug_masks)
         return aug_feat_dict, aug_record
         
     def compute_all_features(self, images, masks) -> dict:
@@ -875,7 +886,10 @@ class FeatureExtractorAugWrapper:
                 return self.all_aug_features
             else:
                 logger.info("No existing augmentations found.")
-        existing_aug_ids = [int(aug.split("_")[-1]) for aug in existing_augs]        
+        if existing_augs is None:
+            existing_aug_ids = []
+        else:
+            existing_aug_ids = [int(aug.split("_")[-1]) for aug in existing_augs]        
         
         if 0 not in existing_aug_ids:
             orig_feat_dict = self._compute_original(images, masks)
