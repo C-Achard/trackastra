@@ -856,17 +856,17 @@ def train(args):
         emb_save_path = None if args.cachedir is None else Path(args.cachedir).resolve()
         if not emb_save_path.exists():
             emb_save_path.mkdir(parents=False, exist_ok=True)
-        pca_save_path = (
-            Path(logdir) / "pca" if args.pretrained_feats_pca_ncomp else None
-        )
+        # pca_save_path = (
+        #     Path(logdir) / "pca" if args.pretrained_feats_pca_ncomp else None
+        # )
         
         pretrained_config = PretrainedFeatureExtractorConfig(
             model_name=args.pretrained_feats_model,
             mode=args.pretrained_feats_mode,
             save_path=emb_save_path,
             additional_features=args.pretrained_feats_additional_props,
-            pca_components=args.pretrained_feats_pca_ncomp,
-            pca_preprocessor_path=pca_save_path,
+            # pca_components=args.pretrained_feats_pca_ncomp,
+            # pca_preprocessor_path=pca_save_path,
         )
 
     n_gpus = torch.cuda.device_count() if args.distributed else 1
@@ -1317,12 +1317,12 @@ def parse_train_args():
         default=None,
         help="Additional regionprops features to use in addition to pretrained model embeddings",
     )
-    parser.add_argument(
-        "--pretrained_feats_pca_ncomp",
-        type=int,
-        default=None,
-        help="Number of components to use for PCA dimensionality reduction. If None, no PCA is applied.",
-    )
+    # parser.add_argument(
+    #     "--pretrained_feats_pca_ncomp",
+    #     type=int,
+    #     default=None,
+    #     help="Number of components to use for PCA dimensionality reduction. If None, no PCA is applied.",
+    # )
     parser.add_argument(
         "--weight_decay",
         type=float,

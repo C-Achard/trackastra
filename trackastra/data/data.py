@@ -176,13 +176,14 @@ class CTCData(Dataset):
             "patch_regionprops",
             "wrfeat",
             "pretrained_feats",
+            "pretrained_feats_aug",
         ] = "wrfeat",
         sanity_dist: bool = False,
         crop_size: tuple | None = None,
         return_dense: bool = False,
         compress: bool = False,
         pretrained_backbone_config: PretrainedFeatureExtractorConfig | None = None,
-        pca_preprocessor: EmbeddingsPCACompression | None = None,
+        # pca_preprocessor: EmbeddingsPCACompression | None = None,
         **kwargs,
     ) -> None:
         """Args:
@@ -214,10 +215,10 @@ class CTCData(Dataset):
             Configuration for the pretrained backbone.
             If mode is set to "pretrained_feats", this configuration is used to extract features.
             Ignored otherwise.
-        pca_preprocessor (EmbeddingsPCACompression):
-            PCA preprocessor for the pretrained features.
-            If mode is set to "pretrained_feats", this is used to reduce the dimensionality of the features.
-            Ignored otherwise.
+        # pca_preprocessor (EmbeddingsPCACompression):
+        #     PCA preprocessor for the pretrained features.
+        #     If mode is set to "pretrained_feats", this is used to reduce the dimensionality of the features.
+        #     Ignored otherwise.
         """
         super().__init__()
 
