@@ -36,7 +36,7 @@ from trackastra.data.features import (
 from trackastra.data.matching import matching
 
 # from ..utils import blockwise_sum, normalize
-from trackastra.utils import blockwise_sum, normalize, masks2properties
+from trackastra.utils import blockwise_sum, masks2properties, normalize
 
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.INFO)
@@ -47,9 +47,8 @@ if TYPE_CHECKING:
         PretrainedBackboneType,
         PretrainedFeatsExtractionMode,
         PretrainedFeatureExtractorConfig,
-        # EmbeddingsPCACompression,
     )
-
+    
 
 def _filter_track_df(df, start_frame, end_frame, downscale):
     """Only keep tracklets that are present in the given time interval."""
@@ -155,6 +154,16 @@ class CTCData(Dataset):
         }
         # "pretrained_feats" -> defined by PretrainedFeatureExtractorConfig.feat_dim
     }
+    VALID_FEATURES: ClassVar = {
+        "none",
+        "regionprops",
+        "regionprops2",
+        "patch",
+        "patch_regionprops",
+        "wrfeat",
+        "pretrained_feats",
+        "pretrained_feats_aug",
+    }
     
     def __new__(cls, *args, **kwargs):
         # Check if features is "pretrained_feats_aug"; if it is, use CTCDataAugPretrainedFeats class
@@ -237,13 +246,13 @@ class CTCData(Dataset):
         self.downscale_spatial = downscale_spatial
         self.downscale_temporal = downscale_temporal
         self.detection_folders = detection_folders
-        self.ndim = ndim
+        self._ndim = ndim
         self.features = features
 
-        if features not in ("none", "wrfeat") and features not in _PROPERTIES[ndim]:
+        if features not in self.VALID_FEATURES and features not in _PROPERTIES[self._ndim]:
             raise ValueError(
-                f"'{features}' not one of the supported {ndim}D features"
-                f" {tuple(_PROPERTIES[ndim].keys())}"
+                f"'{features}' not one of the supported {self._ndim}D features"
+                f" {tuple(_PROPERTIES[self._ndim].keys())}"
             )
         
         if features == "pretrained_feats" or features == "pretrained_feats_aug":
@@ -315,20 +324,21 @@ class CTCData(Dataset):
 
         start = default_timer()
 
-        self._init_features() # loads and creates windows
+        self._init_features()  # loads and creates windows
 
         self.n_divs = self._get_ndivs(self.windows)
 
-        if len(self.windows) > 0:
-            self.ndim = self.windows[0]["coords"].shape[1]
-            self.n_objects = tuple(len(t["coords"]) for t in self.windows)
-            logger.info(
-                f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
-                f" windows from {self.root} ({default_timer() - start:.1f}s)\n"
-            )
-        else:
-            self.n_objects = 0
-            logger.warning(f"Could not load any tracks from {self.root}")
+        # if len(self.windows) > 0:
+        #     self.ndim = self.windows[0]["coords"].shape[1]
+        #     self.n_objects = tuple(len(t["coords"]) for t in self.windows)
+        #     logger.info(
+        #         f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
+        #         f" windows from {self.root} ({default_timer() - start:.1f}s)\n"
+        #     )
+        # else:
+        #     self.n_objects = 0
+        #     logger.warning(f"Could not load any tracks from {self.root}")
+        self._get_ndim_and_nobj(start)
 
         if self.compress:
             self._compress_data()
@@ -343,6 +353,16 @@ class CTCData(Dataset):
             self.windows = self._load()
     
     @property
+    def ndim(self):
+        return self._ndim
+    
+    @ndim.setter
+    def ndim(self, value: int):
+        if value not in (2, 3):
+            raise ValueError(f"ndim must be 2 or 3, got {value}")
+        self._ndim = value
+    
+    @property
     def feat_dim(self):
         return self.FEATURES_DIMENSIONS[self.features][self.ndim]
     
@@ -353,7 +373,9 @@ class CTCData(Dataset):
     @pretrained_config.setter
     def pretrained_config(self, config: PretrainedFeatureExtractorConfig):
         if isinstance(config, dict):
-            from trackastra.data.pretrained_features import PretrainedFeatureExtractorConfig
+            from trackastra.data.pretrained_features import (
+                PretrainedFeatureExtractorConfig,
+            )
             config = PretrainedFeatureExtractorConfig.from_dict(config)
         try:
             self.FEATURES_DIMENSIONS["pretrained_feats"] = config.feat_dim
@@ -434,7 +456,19 @@ class CTCData(Dataset):
 
         if self.compress:
             self._compress_data()
-            
+    
+    def _get_ndim_and_nobj(self, start):
+        if len(self.windows) > 0:
+            self.ndim = self.windows[0]["coords"].shape[1]
+            self.n_objects = tuple(len(t["coords"]) for t in self.windows)
+            logger.info(
+                f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
+                f" windows from {self.root} ({default_timer() - start:.1f}s)\n"
+            )
+        else:
+            self.n_objects = 0
+            logger.warning(f"Could not load any tracks from {self.root}")
+    
     def _get_ndivs(self, windows):
         n_divs = []
         for w in tqdm(windows, desc="Counting divisions", leave=False):
@@ -1338,11 +1372,10 @@ class CTCData(Dataset):
         coords0 = torch.from_numpy(coords0).float()
         assoc_matrix = torch.from_numpy(assoc_matrix.astype(np.float32))
         # if self.pca_preprocessor is not None:
-            # features = self.pca_preprocessor.transform(feat.features_stacked)
+        # features = self.pca_preprocessor.transform(feat.features_stacked)
         # else:
         features = feat.features_stacked
         features = torch.from_numpy(features).float()
-        
         
         labels = torch.from_numpy(feat.labels).long()
         timepoints = torch.from_numpy(feat.timepoints).long()
@@ -1448,7 +1481,7 @@ class CTCData(Dataset):
 class CTCDataAugPretrainedFeats(CTCData):
     """CTCData with pretrained features."""
 
-    def __init__(self, n_augmentations:int = 3, *args, **kwargs):
+    def __init__(self, n_augmentations: int = 3, *args, **kwargs):
         """Args:
         root (str):
             Folder containing the CTC TRA folder.
@@ -1485,18 +1518,38 @@ class CTCDataAugPretrainedFeats(CTCData):
         #     If mode is set to "pretrained_feats", this is used to reduce the dimensionality of the features.
         #     Ignored otherwise.
         """
-        super().__init__(*args, **kwargs)
-        if not self.features == "pretrained_feats_aug":
+        features = kwargs.get("features", None)
+        augment_level = kwargs.get("augment", 0)
+        
+        if features is not None and not features == "pretrained_feats_aug":
             raise ValueError("This class should only be used with pretrained_feats_aug features")
-        if self.augment_level > 0:
+        if augment_level > 0:
             raise ValueError("Data augmentation should be specified using n_augmentations for this mode instead.")
         self.n_augs = n_augmentations
         
         self.pretrained_feats_augmenter = None
         self.augmented_feature_extractor = None
+        
+        self._last_selected = None
+        self._rng = np.random.default_rng()
+        self._debug = False
     
+        super().__init__(*args, **kwargs)
+        
     def _init_features(self):
         self.windows = self._load()
+        
+    def _get_ndim_and_nobj(self, start):
+        if len(self.windows) > 0:
+            self.ndim = self.__getitem__(0)["coords"].shape[1] - 1
+            self.n_objects = tuple(len(t["coords"][0]) for t in self.windows)
+            logger.info(
+                f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
+                f" windows from {self.root} ({default_timer() - start:.1f}s)\n"
+            )
+        else:
+            self.n_objects = 0
+            logger.warning(f"Could not load any tracks from {self.root}")
     
     @classmethod
     def from_arrays(cls, imgs: np.ndarray, masks: np.ndarray, train_args: dict):
@@ -1521,8 +1574,8 @@ class CTCDataAugPretrainedFeats(CTCData):
             self._compress_data() 
     
     def _setup_features_augs(self):
-        raise NotImplementedError("Data augmentation is handled differently for pretrained_feats_aug features mode")
-
+        return None, None
+    
     def _load(self):
         all_windows = []
         imgs = self._prepare_masks_and_imgs(return_orig_imgs=True)
@@ -1540,7 +1593,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 (
                     det_labels,
                     det_ts,
-                    det_coords,
+                    _det_coords,
                 ) = self._masks2properties(det_masks)
                 
                 det_gt_matching = {
@@ -1560,7 +1613,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 (
                     det_labels,
                     det_ts,
-                    det_coords,
+                    _det_coords,
                 ) = self._masks2properties(det_masks)
                 # FIXME matching can be slow for big images
                 # raise NotImplementedError("Matching not implemented for 3d version")
@@ -1578,12 +1631,13 @@ class CTCDataAugPretrainedFeats(CTCData):
                 }
 
             self.det_masks[_f] = det_masks
-            # compute features
+            # Setup feature extractor
             self._setup_pretrained_feature_extractor()
             
+            # Build augmentation pipeline
             from trackastra.data.pretrained_features import (
-                PretrainedAugmentations, 
-                FeatureExtractorAugWrapper
+                FeatureExtractorAugWrapper,
+                PretrainedAugmentations,
             )
             self.pretrained_feats_augmenter = PretrainedAugmentations(rng_seed=42)
             self.augmented_feature_extractor = FeatureExtractorAugWrapper(
@@ -1592,6 +1646,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 n_aug=self.n_augs,
             )
             
+            # Compute features for all augmentations
             augmented_dict = self.augmented_feature_extractor.compute_all_features(
                 images=imgs,
                 masks=det_masks,
@@ -1612,6 +1667,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         windows = []
         window_size = self.window_size
         n_frames = len(det_masks)
+        n_entries = self.n_augs + 1
         # augmented_dict structure :
         #  - aug_id:
         #     - applied_augs: dict, record of the applied augmentations
@@ -1633,8 +1689,8 @@ class CTCDataAugPretrainedFeats(CTCData):
             
             # _coords should be a dict with n_aug keys, each with a list of coords for each label
             # {n_aug: [np.ndarray(3)]} with list of len n_labels
-            _coords = {aug_id: [] for aug_id in range(self.n_augs)}
-            for aug_id in range(self.n_augs):
+            _coords = {aug_id: [] for aug_id in range(n_entries)}
+            for aug_id in range(n_entries):
                 for t in range(t1, t2):
                     labels_at_t = _labels[_ts == t]
                     coords_at_t = [
@@ -1646,8 +1702,8 @@ class CTCDataAugPretrainedFeats(CTCData):
                 if not len(_coords[aug_id]) == len(_labels):
                     raise ValueError(f"Number of coords {len(_coords[aug_id])} does not match number of labels {len(_labels)}")
             
-            _features = {aug_id: [] for aug_id in range(self.n_augs)}
-            for aug_id in range(self.n_augs):
+            _features = {aug_id: [] for aug_id in range(n_entries)}
+            for aug_id in range(n_entries):
                 for t in range(t1, t2):
                     labels_at_t = _labels[_ts == t]
                     features_at_t = [
@@ -1664,8 +1720,8 @@ class CTCDataAugPretrainedFeats(CTCData):
                 A = np.zeros((0, 0), dtype=bool)
             else:
                 A = _ctc_assoc_matrix(
-                    labels,
-                    ts,
+                    _labels,
+                    _ts,
                     self.gt_graph,
                     matching,
                 )
@@ -1674,21 +1730,23 @@ class CTCDataAugPretrainedFeats(CTCData):
                 coords=_coords,
                 t1=t1,
                 img=self.imgs[t1:t2],
-                mask=self.det_masks[t1:t2],
+                mask=det_masks[t1:t2],
                 assoc_matrix=A,
                 labels=_labels,
                 timepoints=_ts,
                 features=_features,
             )
+            if not len(_coords) == n_entries or not len(_features) == n_entries:
+                raise ValueError(f"Number of coords {len(_coords)} or features {len(_features)} does not match number of augmentations {n_entries}")
             windows.append(w)
             
         logger.debug(f"Built {len(windows)} track windows.\n")
         return windows
     
     def __getitem__(self, n: int, return_dense=None):
-        
         track = self.windows[n]
-        random_aug_choice = np.random.randint(0, self.n_augs)
+        # 0 is original, 1 to n_augs are the augmented versions
+        random_aug_choice = self._rng.integers(0, self.n_augs + 1) 
         coords = track["coords"][random_aug_choice]
         features = track["features"][random_aug_choice]
         
@@ -1703,8 +1761,8 @@ class CTCDataAugPretrainedFeats(CTCData):
         img = CTCDataAugPretrainedFeats.decompress(img)
         assoc_matrix = CTCDataAugPretrainedFeats.decompress(assoc_matrix)
         
-        coords = np.concatenate(coords, axis=0)
-        features = np.concatenate(features, axis=0)
+        coords = np.stack(coords, axis=0)
+        features = np.stack(features, axis=0)
 
         shapes = [
             len(labels),
@@ -1715,7 +1773,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         if len(np.unique(shapes)) != 1:
             raise ValueError(f"Shape mismatch: {shapes} (labs/timepoints/coords/features)")
         
-            # coords is already including time, simply remove min_time along the first axis
+        # coords is already including time, simply remove min_time along the first axis
         coords[:, 0] -= min_time
         
         if self.max_tokens and len(timepoints) > self.max_tokens:
@@ -1754,6 +1812,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             res["mask"] = mask
         return res
         
+
 def _ctc_lineages(df, masks, t1=0, t2=None):
     """From a ctc dataframe, create a digraph that contains all sublineages
     between t1 and t2 (exclusive t2).

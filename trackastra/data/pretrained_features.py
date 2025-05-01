@@ -1,13 +1,13 @@
+import json
 import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from functools import partial
 from pathlib import Path
-from typing import Literal, List
-import h5py
-import json
+from typing import Literal
 
+import h5py
 import joblib
 import numpy as np
 import torch
@@ -27,7 +27,7 @@ from transformers import (
 )
 
 from trackastra.data import CTCData
-from trackastra.utils import masks2properties, add_timepoints_to_coords
+from trackastra.utils import add_timepoints_to_coords, masks2properties
 
 MICRO_SAM_AVAILABLE = False
 try:
@@ -116,12 +116,14 @@ def percentile_norm(b):
 
 # Augmentations for pre-trained models
 
-from torchvision.transforms import v2 as transforms
+
 from torchvision import tv_tensors
+from torchvision.transforms import v2 as transforms
+
 
 class BaseAugmentation(ABC):
     """Base class for windowed region augmentations."""
-    def __init__(self, p: float = 0.5, rng_seed = None):
+    def __init__(self, p: float = 0.5, rng_seed=None):
         self._p = p
         self._rng = np.random.RandomState(rng_seed)
         self.applied_record = {}
@@ -136,8 +138,9 @@ class BaseAugmentation(ABC):
     def _get_aug(self) -> transforms.Compose:
         raise NotImplementedError()
     
+
 class FlipAugment(BaseAugmentation):
-    def __init__(self, p_horizontal: float = 0.5, p_vertical: float = 0.5, rng_seed = None):
+    def __init__(self, p_horizontal: float = 0.5, p_vertical: float = 0.5, rng_seed=None):
         super().__init__(p=None, rng_seed=rng_seed)
         self._p_horizontal = p_horizontal
         self._p_vertical = p_vertical
@@ -160,9 +163,10 @@ class FlipAugment(BaseAugmentation):
     def _get_aug(self) -> transforms.Compose:
         raise NotImplementedError("Use __call__ instead.")
         
+
 class RotAugment(BaseAugmentation):
     
-    def __init__(self, p: float = 0.5, degrees: int = 90, rng_seed = None):
+    def __init__(self, p: float = 0.5, degrees: int = 90, rng_seed=None):
         super().__init__(p, rng_seed=rng_seed)
         self.degrees = degrees
     
@@ -175,13 +179,14 @@ class RotAugment(BaseAugmentation):
         return images, masks
     
     def _get_aug(self):
-        angle = self._rng.randint(1, 4) * self.degrees # sample from 90, 180, 270
+        angle = self._rng.randint(1, 4) * self.degrees  # sample from 90, 180, 270
         self.applied_record["rotation"] = angle
         return partial(transforms.functional.rotate, angle=angle, expand=True)
     
+
 class BrightnessJitter(BaseAugmentation):
     
-    def __init__(self, bright_shift: float = 0.5, contrast_shift: float = 0.5, rng_seed = None):
+    def __init__(self, bright_shift: float = 0.5, contrast_shift: float = 0.5, rng_seed=None):
         super().__init__(p=None, rng_seed=rng_seed)
         self._b_shift = bright_shift
         self._c_shift = contrast_shift
@@ -199,6 +204,7 @@ class BrightnessJitter(BaseAugmentation):
         self.applied_record["contrast_jitter"] = contrast
         return transforms.ColorJitter(brightness=bright, contrast=contrast)
 
+
 class PretrainedAugmentations:
     """Augmentation pipeline to get augmented copies of model embeddings."""
     def __init__(self, rng_seed=None, normalize=True):
@@ -215,13 +221,12 @@ class PretrainedAugmentations:
 
     def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask, normalize=True) -> tuple[torch.Tensor, tv_tensors.Mask, dict]:
         """Applies the augmentations to the images."""
-
         images, masks = self.preprocess(images, masks, normalize=normalize)
         
         images = torch.unsqueeze(images, dim=1)  # add channel dimension (T, C, H, W) for augmentation
         masks = torch.unsqueeze(masks, dim=1)  # add channel dimension (T, C, H, W) for augmentation
         
-        images, masks =  self._aug(images, masks)
+        images, masks = self._aug(images, masks)
         # NOTE : most models do require 3 channels, but this will be done in FeatureExtractor, so the output is squeezed
         return images.squeeze(), masks.squeeze(), self.gather_records()
     
@@ -254,6 +259,7 @@ class PretrainedAugmentations:
         for aug in self.aug_list:
             self.aug_record.update(aug.applied_record)
         return self.aug_record
+
 
 @dataclass
 class PretrainedFeatureExtractorConfig:
@@ -304,7 +310,6 @@ class PretrainedFeatureExtractorConfig:
         if self.pca_components is not None:
             self.feat_dim = self.pca_components
 
-        
     def _guess_device(self):
         if self.device is None:
             should_use_mps = (
@@ -831,20 +836,22 @@ class FeatureExtractorAugWrapper:
         
     def _check_existing(self):
         """Checks if an h5 file already exists, and which augmentations are already saved."""
-        if self.save_path is None or not self.save_path.exists() or self.force_recompute:
+        self._get_save_path()
+        if not self.save_path.exists() or self.force_recompute:
             return False, None, None
+        logger.info(f"Loading existing features from {self.save_path}...")
         with h5py.File(self.save_path, "r") as f:
             existing_augs = list(f.keys())
             features_dict = self.load_all_features()
+        logger.info("Done.")
         return True, existing_augs, features_dict
     
-
     def _compute(self, images, masks):
         """Computes the features for the images and masks."""
         embs = self.extractor.precompute_image_embeddings(images)
         if self._debug_view is not None:
             embs = embs.cpu().numpy()
-            print(f"Embeddings shape: {embs.shape}")
+            logger.debug(f"Embeddings shape: {embs.shape}")
             embs = embs.reshape(-1, self.extractor.final_grid_size, self.extractor.final_grid_size, self.extractor.hidden_state_size)
             embs = np.moveaxis(embs, 3, 0)
             self._debug_view.add_image(embs, name="Embeddings", colormap="inferno")
@@ -880,7 +887,7 @@ class FeatureExtractorAugWrapper:
         present, existing_augs, existing_features_dict = self._check_existing()
         if present:
             logger.info(f"Augmented features already exist at {self.save_path}.")
-            if len(existing_augs) == self.n_aug+1:
+            if len(existing_augs) == self.n_aug + 1:
                 logger.info(f"All {self.n_aug} augmentations + original already exist. Loading existing features.")
                 self.all_aug_features = existing_features_dict
                 return self.all_aug_features
@@ -902,7 +909,7 @@ class FeatureExtractorAugWrapper:
                 "data": orig_feat_dict,
             }
         }
-        if not 0 in existing_aug_ids:
+        if 0 not in existing_aug_ids:
             self._save_features(0, self.all_aug_features[0])
         
         self.aug_pipeline.normalize = False  # do not re-normalize the images
@@ -918,7 +925,7 @@ class FeatureExtractorAugWrapper:
                 "applied_augs": aug_record,
                 "data": aug_feat_dict,
             }
-            if not n + 1 in existing_aug_ids:
+            if n + 1 not in existing_aug_ids:
                 self._save_features(n + 1, self.all_aug_features[n + 1])
 
         return self.all_aug_features
@@ -970,6 +977,7 @@ class FeatureExtractorAugWrapper:
 
     def load_all_features(self) -> dict:
         """Loads all features from disk."""
+        self._get_save_path()
         if not self.save_path.exists():
             raise FileNotFoundError(f"Path {self.save_path} does not exist.")
         
@@ -1009,7 +1017,6 @@ class FeatureExtractorAugWrapper:
                 }
         return features
        
-    
 
 ##############
 @register_backbone("facebook/hiera-tiny-224-hf", 768)
@@ -1240,6 +1247,7 @@ class MicroSAMFeatures(FeatureExtractor):
             out = out.unsqueeze(0)
         return out
 
+
 @register_backbone("random", 256)
 class RandomFeatures(FeatureExtractor):
     model_name = "random"
@@ -1270,17 +1278,20 @@ class RandomFeatures(FeatureExtractor):
         feats = feats * 4 - 2  # [-2, 2]
         return feats
 
+
 FeatureExtractor._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
 
 
 # Embeddings post-processing
 
-from sklearn.decomposition import PCA
 import pickle
+
+from sklearn.decomposition import PCA
+
 
 class EmbeddingsPCACompression:
     
-    def __init__(self, original_model_name: str, n_components: int = 15, save_path: str | Path = None):
+    def __init__(self, original_model_name: str, n_components: int = 15, save_path: str | Path | None = None):
         self.original_model_name = original_model_name
         self.n_components = n_components
         self.save_path = save_path / "pca_model.pkl" if save_path is not None else None
@@ -1321,9 +1332,8 @@ class EmbeddingsPCACompression:
             self.pca = pickle.load(f)
         logger.info(f"Loaded PCA model from {path}.")
     
-    def fit_on_embeddings(self, embeddings_source_folders: List[str | Path]):
+    def fit_on_embeddings(self, embeddings_source_folders: list[str | Path]):
         """Fits the PCA model to the embeddings loaded from a file."""
-        
         embeddings = []
         N_samples = 0
         
@@ -1338,7 +1348,7 @@ class EmbeddingsPCACompression:
         
         embeddings_paths = self.generator.permutation(embeddings_paths)
         logger.info(f"Fitting PCA model on {len(embeddings_paths)} embeddings files.")
-        logger.info(f"Files :")
+        logger.info("Files :")
         for p in embeddings_paths:
             logger.info(f" - {p}")
         logger.info("*" * 50)
