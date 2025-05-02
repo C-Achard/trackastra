@@ -166,7 +166,7 @@ class FlipAugment(BaseAugmentation):
 
 class RotAugment(BaseAugmentation):
     
-    def __init__(self, p: float = 0.5, degrees: int = 90, rng_seed=None):
+    def __init__(self, p: float = 0.5, degrees: int = 15, rng_seed=None):
         super().__init__(p, rng_seed=rng_seed)
         self.degrees = degrees
     
@@ -174,14 +174,13 @@ class RotAugment(BaseAugmentation):
         aug = self._get_aug()
         if self._rng.rand() > self._p:
             return images, masks
-        images = aug(images)
-        masks = aug(masks)
+        images, masks = aug(images, masks)
         return images, masks
     
     def _get_aug(self):
-        angle = self._rng.randint(1, 4) * self.degrees  # sample from 90, 180, 270
-        self.applied_record["rotation"] = angle
-        return partial(transforms.functional.rotate, angle=angle, expand=True)
+        t = transforms.RandomRotation(degrees=self.degrees)
+        self.applied_record["rotation"] = self.degrees
+        return t
     
 
 class BrightnessJitter(BaseAugmentation):
@@ -203,16 +202,48 @@ class BrightnessJitter(BaseAugmentation):
             contrast = None
         self.applied_record["contrast_jitter"] = contrast
         return transforms.ColorJitter(brightness=bright, contrast=contrast)
+    
+class AddGaussianNoise(BaseAugmentation):
+    def __init__(self, mean: float = 0.0, std: float = 0.1, rng_seed=None):
+        super().__init__(p=None, rng_seed=rng_seed)
+        self.mean = mean
+        self.std = std
 
+    def _get_aug(self):
+        return transforms.Lambda(lambda x: x + torch.randn_like(x) * self.std + self.mean)
+
+    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
+        aug = self._get_aug()
+        if self._rng.rand() > self._p:
+            return images, masks
+        images = aug(images)
+        return images, masks
+    
+class RandomAffine(BaseAugmentation):
+    def __init__(self, degrees: float = 0.0, translate: tuple[float, float] = (0.0, 0.0), scale: tuple[float, float] = (1.0, 1.0), rng_seed=None):
+        super().__init__(p=None, rng_seed=rng_seed)
+        self.degrees = degrees
+        self.translate = translate
+        self.scale = scale
+
+    def _get_aug(self):
+        return transforms.RandomAffine(degrees=self.degrees, translate=self.translate, scale=self.scale)
+
+    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
+        aug = self._get_aug()
+        images, masks = aug(images, masks)
+        return images, masks
 
 class PretrainedAugmentations:
     """Augmentation pipeline to get augmented copies of model embeddings."""
     def __init__(self, rng_seed=None, normalize=True):
         self.aug_record = {}
         self.aug_list = [
-            BrightnessJitter(bright_shift=0.75, contrast_shift=0.75, rng_seed=rng_seed),
+            BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
             FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
-            RotAugment(p=0.5, degrees=90, rng_seed=rng_seed),
+            RotAugment(degrees=15, rng_seed=rng_seed),
+            # AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
+            # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
         ]
         self._aug = transforms.Compose(
             self.aug_list
