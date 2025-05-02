@@ -855,7 +855,7 @@ class FeatureExtractorAugWrapper:
         # instead, we will save the augmented features + coordinates on a per-object basis in an HDF5 file
 
         self.save_path = None
-        self.force_recompute = False
+        self.force_recompute = True
         
         self._debug_view = None
         
