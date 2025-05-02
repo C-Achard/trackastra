@@ -839,7 +839,7 @@ def train(args):
         )
         
     pretrained_config = None
-    if args.features == "pretrained_feats":
+    if args.features == "pretrained_feats" or args.features == "pretrained_feats_aug":
         if args.pretrained_feats_model is None:
             raise ValueError(
                 "Pretrained model must be defined if pretrained features are in use."
@@ -852,6 +852,10 @@ def train(args):
         if args.pretrained_feats_mode is None:
             raise ValueError(
                 "Pretrained mode must be defined if pretrained features are in use."
+            )
+        if args.features == "pretrained_feats_aug" and args.pretrained_n_augs is None:
+            raise ValueError(
+                "Number of augmentated copies must be defined if using augmented pretrained features."
             )
         emb_save_path = None if args.cachedir is None else Path(args.cachedir).resolve()
         if not emb_save_path.exists():
@@ -888,6 +892,7 @@ def train(args):
             crop_size=args.crop_size,
             compress=args.compress,
             pretrained_backbone_config=pretrained_config,
+            n_augmentations=args.pretrained_n_augs,
         )
         dummy_model = TrackingTransformer(
             coord_dim=dummy_data.ndim,
@@ -954,6 +959,7 @@ def train(args):
         crop_size=args.crop_size,
         compress=args.compress,
         pretrained_backbone_config=pretrained_config,
+        n_augmentations=args.pretrained_n_augs,
     )
     sampler_kwargs = dict(
         batch_size=args.batch_size,
@@ -1023,7 +1029,7 @@ def train(args):
             model = TrackingTransformer.from_folder(fpath, args=args)
     else:
         # feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12 
-        if args.features == "pretrained_feats":  # TODO find a way to truly automate this
+        if args.features == "pretrained_feats" or args.features == "pretrained_feats_aug":  # TODO find a way to truly automate this
             feat_dim = pretrained_config.feat_dim
         else:
             feat_dim = CTCData.get_feat_dim(args.features, args.ndim)
@@ -1211,6 +1217,7 @@ def parse_train_args():
             "patch_regionprops",
             "wrfeat",
             "pretrained_feats",
+            "pretrained_feats_aug",
         ],
         default="wrfeat",
     )
@@ -1328,6 +1335,12 @@ def parse_train_args():
         type=float,
         default=0.01,
         help="Weight decay for the AdamW optimizer",
+    )
+    parser.add_argument(
+        "--pretrained_n_augs",
+        type=int,
+        default=None,
+        help="Number of augmentations to use for pretrained features. Only valid if features is pretrained_feats_aug",
     )
 
     args, unknown_args = parser.parse_known_args()
