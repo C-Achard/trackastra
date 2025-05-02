@@ -22,7 +22,7 @@ from torch.utils.data import (
 
 from trackastra.data.pretrained_features import PretrainedFeatureExtractorConfig, EmbeddingsPCACompression
 
-from .data import CTCData
+from .data import CTCData, CTCDataAugPretrainedFeats
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -79,8 +79,12 @@ def cache_class(cachedir=None):
                 if c.pretrained_config is not None:
                     c.pretrained_config = c.pretrained_config.to_dict()
                     c.feature_extractor = None
+                if isinstance(c, CTCDataAugPretrainedFeats):
+                    c.feature_extractor = None
+                    c.augmented_feature_extractor = None
                 logger.info(f"Saving cached dataset to {cache_file}")
                 pickle.dump(c, open(cache_file, "wb"))
+                logger.debug(f"Cache file size: {cache_file.stat().st_size / 1e6:.2f} MB")
             return c
 
         return _wrapped
