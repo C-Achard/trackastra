@@ -1,13 +1,14 @@
 import logging
 import os
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, List
 
 import joblib
 import numpy as np
 import torch
+import torch.nn.functional as F
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from skimage.measure import regionprops
 from tqdm import tqdm
@@ -22,6 +23,15 @@ from transformers import (
     SamProcessor,
 )
 
+from trackastra.data import CTCData
+
+MICRO_SAM_AVAILABLE = False
+try:
+    from micro_sam.util import get_sam_model as get_microsam_model
+    MICRO_SAM_AVAILABLE = True
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -30,6 +40,7 @@ HieraFeatures = None
 DinoV2Features = None
 SAMFeatures = None
 SAM2Features = None
+MicroSAMFeatures = None
 
 # Updated with actual class after each definition
 # See register_backbone decorator
@@ -38,7 +49,8 @@ AVAILABLE_PRETRAINED_BACKBONES = {}
 PretrainedFeatsExtractionMode = Literal[
     # "exact_patch",  # Uses the image patch centered on the detection for embedding
     "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-    "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
+    "mean_patches",  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
+    "max_patches"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
 ]
 
 PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.11 so it has to be copied
@@ -47,6 +59,9 @@ PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.1
     "facebook/sam-vit-base",  # 256
     "facebook/sam2-hiera-large",  # 256
     "facebook/sam2.1-hiera-base-plus",  # 256
+    "microsam/vit_b_lm",
+    "microsam/vit_l_lm",
+    "random"
 ]
 
 
@@ -98,10 +113,16 @@ class PretrainedFeatureExtractorConfig:
         Specify the batch size to use for the model.
     mode (str):
         Specify the mode to use for the model.
-        Currently available modes are "nearest_patch" and "mean_patches".
+        Currently available modes are "nearest_patch", "mean_patches", and "max_patches".
     device (str):
         Specify the device to use for the model.
         If not set and "pretrained_feats" is used, the device is automatically set by default to "cuda", "mps" or "cpu" as available.
+    additional_features (str):
+        Specify any additional features (from regionprops) to include in the extraction process. See WRFeat documentation for available features. Unused if None.
+    pca_components (int):
+        Specify the number of PCA components to use for dimensionality reduction of the features. Unused if None.
+    pca_preprocessor_path (str | Path):
+        Specify the path to the pickled PCA preprocessor. This is used to transform the features to a reduced PCA feature space.
     """
     model_name: PretrainedBackboneType
     save_path: str | Path = None
@@ -109,6 +130,9 @@ class PretrainedFeatureExtractorConfig:
     mode: PretrainedFeatsExtractionMode = "nearest_patch"
     device: str | None = None
     feat_dim: int = None
+    additional_features: str | None = None  # for regionprops features
+    pca_components: int = None  # for PCA reduction of the features
+    pca_preprocessor_path: str | Path = None  # for PCA preprocessor path
     
     def __post_init__(self):
         self._guess_device()
@@ -118,6 +142,13 @@ class PretrainedFeatureExtractorConfig:
         if self.model_name not in AVAILABLE_PRETRAINED_BACKBONES.keys():
             raise ValueError(f"Model {self.model_name} is not available for feature extraction.")
         self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
+        if self.additional_features is not None:
+            self.feat_dim += CTCData.FEATURES_DIMENSIONS[self.additional_features][2] + 1  # TODO if this ever accepts 3D data this will be incorrect
+            if self.additional_features not in CTCData.FEATURES_DIMENSIONS:
+                raise ValueError(f"Additional feature {self.additional_features} is not valid.")
+        if self.pca_components is not None:
+            self.feat_dim = self.pca_components
+
         
     def _guess_device(self):
         if self.device is None:
@@ -141,6 +172,13 @@ class PretrainedFeatureExtractorConfig:
         except Exception as e:
             raise ValueError(f"Invalid device: {self.device}") from e
 
+    def to_dict(self):
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, config_dict):
+        return cls(**config_dict)
+    
 
 class FeatureExtractor(ABC):
     model_name = None
@@ -172,13 +210,16 @@ class FeatureExtractor(ABC):
         # Data specs
         self.orig_image_size = image_size
         self.orig_n_channels = 1
-        self.do_rescale = True
+        # Batch options and preprocessing
+        self.percentile_norm = True
+        self.rescale_batches = False
         self.channel_first = True
         self.batch_return_type: Literal["list[np.ndarray]", "np.ndarray"] = "np.ndarray"
         # Parameters for embedding extraction
         self.batch_size = batch_size
         self.device = device
         self.mode = mode
+        self.additional_features = None
         # Saving parameters
         self.save_path: str | Path = save_path
         self.embeddings = None
@@ -187,7 +228,7 @@ class FeatureExtractor(ABC):
             self.save_path = Path(self.save_path)
         
         if not self.save_path.exists():
-            self.save_path.mkdir(parents=False, exist_ok=True)
+            self.save_path.mkdir(parents=True, exist_ok=True)
     
     @property
     def input_size(self):
@@ -195,6 +236,8 @@ class FeatureExtractor(ABC):
     
     @input_size.setter
     def input_size(self, value: int):
+        if value is None:
+            raise ValueError("Input size cannot be None.")
         self._input_size = value
         self._set_model_patch_size()
         
@@ -217,7 +260,8 @@ class FeatureExtractor(ABC):
                         image_shape: tuple[int, int], 
                         save_path: str | Path, 
                         device: torch.device = "cuda" if torch.cuda.is_available() else "cpu",
-                        mode="nearest_patch"
+                        mode="nearest_patch",
+                        additional_features=None,
                         # mode="mean_patches"
                         ):
         cls._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
@@ -226,7 +270,25 @@ class FeatureExtractor(ABC):
         logger.info(f"Using model {model_name} with mode {mode} for pretrained feature extraction.")
         backbone = cls._available_backbones[model_name]["class"]
         backbone.model_name = model_name
+        backbone.additional_features = additional_features
         return backbone(image_shape, save_path, device=device, mode=mode)
+
+    @classmethod
+    def from_config(cls, config: PretrainedFeatureExtractorConfig, image_shape: tuple[int, int], save_path: str | Path):
+        cls._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
+        if config.model_name not in cls._available_backbones:
+            raise ValueError(f"Model {config.model_name} is not available for feature extraction.")
+        logger.info(f"Using model {config.model_name} with mode {config.mode} for pretrained feature extraction.")
+        backbone = cls._available_backbones[config.model_name]["class"]
+        backbone.model_name = config.model_name
+        backbone.additional_features = config.additional_features
+        return backbone(
+            image_shape, 
+            save_path, 
+            batch_size=config.batch_size, 
+            device=config.device, 
+            mode=config.mode,
+        )
     
     def _set_model_patch_size(self):
         if self.final_grid_size is not None and self.input_size is not None:
@@ -252,11 +314,15 @@ class FeatureExtractor(ABC):
         feats = torch.zeros(len(coords), self.hidden_state_size, device=self.device)
         
         if self.mode == "nearest_patch":
-            feats = self._nearest_patches(coords)    
+            feats = self._nearest_patches(coords, masks)  
         elif self.mode == "mean_patches":
             if masks is None or labels is None or timepoints is None:
                 raise ValueError("Masks and labels must be provided for mean patch mode.")
-            feats = self._mean_patches(masks, timepoints, labels)
+            feats = self._agg_patches(masks, timepoints, labels)
+        elif self.mode == "max_patches":
+            if masks is None or labels is None or timepoints is None:
+                raise ValueError("Masks and labels must be provided for max patch mode.")
+            feats = self._agg_patches(masks, timepoints, labels, agg=torch.max)
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented.")
         
@@ -270,22 +336,13 @@ class FeatureExtractor(ABC):
         if missing:
             for ts, batches in tqdm(self._prepare_batches(images), total=len(images) // self.batch_size, desc="Computing embeddings"):
                 embeddings = self._run_model(batches)
+                if torch.any(embeddings.isnan()):
+                    raise RuntimeError("NaN values found in features.")
                 # logger.debug(f"Embeddings shape: {embeddings.shape}")
                 all_embeddings[ts] = embeddings
             self.embeddings = all_embeddings
             self._save_features(all_embeddings)
         return self.embeddings
-        # region_embeddings = {}
-        # for n in tqdm(range(0, len(windows), window_size), desc="Extracting region embeddings"):
-        #     self._extract_region_embeddings(region_embeddings, windows[n], n)
-
-        # remaining = len(images) - len(region_embeddings)
-        # logger.debug(f"Remaining frames: {remaining}")
-        # if remaining > 0:
-        #     self._extract_region_embeddings(region_embeddings, windows[-1], len(images) - remaining, remaining)
-
-        # self.embeddings = None  # clear embeddings from memory
-        # return region_embeddings
 
     def _extract_region_embeddings(self, all_frames_embeddings, window, start_index, remaining=None):
         window_coords = window["coords"]
@@ -293,7 +350,7 @@ class FeatureExtractor(ABC):
         window_masks = window["mask"]
         window_labels = window["labels"]
         
-        n_regions_per_frame, features = self._extract_embedding(window_masks, window_timepoints, window_labels, window_coords)
+        n_regions_per_frame, features = self.extract_embedding(window_masks, window_timepoints, window_labels, window_coords)
         
         for i in range(remaining or len(n_regions_per_frame)):
             # if computing remaining frames' embeddings, start from the end
@@ -303,18 +360,24 @@ class FeatureExtractor(ABC):
             all_frames_embeddings[frame_index] = features[:obj_per_frame]
             features = features[obj_per_frame:]
     
-    def _extract_embedding(self, masks, timepoints, labels, coords):
+    def extract_embedding(self, masks, timepoints, labels, coords):
+        if masks.shape[-2:] != self.orig_image_size:
+            # This should not be occur since each folder is loaded as a separate CTCData
+            logger.debug(f"Input shape change detected: {masks.shape[-2:]} from {self.orig_image_size}.")
+            self.orig_image_size = masks.shape[-2:]
         n_regions_per_frame = np.unique(timepoints, return_counts=True)[1]
         tot_regions = n_regions_per_frame.sum()
         coords_txy = np.concatenate((timepoints[:, None], coords), axis=-1)
         if coords_txy.shape[0] != tot_regions:
             raise RuntimeError(f"Number of coords ({coords_txy.shape[0]}) does not match the number of coordinates ({timepoints.shape[0]}).")
         features = self.forward(
-            coords=coords_txy,
             masks=masks,
+            coords=coords_txy,
             timepoints=timepoints,
             labels=labels,
         )
+        if torch.isnan(features).any():
+            raise RuntimeError("NaN values found in features.")
         if tot_regions != features.shape[0]:
             raise RuntimeError(f"Number of regions ({n_regions_per_frame}) does not match the number of embeddings ({features.shape[0]}).")
         return n_regions_per_frame, features
@@ -324,12 +387,14 @@ class FeatureExtractor(ABC):
         """Extracts embeddings from the model."""
         pass
     
-    def _rescale_batch(self, b):
+    def _normalize_batch(self, b):
         for i, im in enumerate(b):
             # b[i] = (im - im.min()) / (im.max() - im.min())
             p1, p99 = np.percentile(im, (1, 99.8))
             b[i] = (im - p1) / (p99 - p1)
             b[i] = np.clip(b[i], 0, 1)
+            if self.rescale_batches:
+                b[i] = b[i] * 255.0
         return b
     
     def _prepare_batches(self, images):
@@ -340,8 +405,8 @@ class FeatureExtractor(ABC):
             batch = np.expand_dims(images[i:end], axis=1)  # (B, C, H, W)
             
             # required by AutoImageProcessor (PIL Image needs [0, 1] range)
-            if self.do_rescale:
-                batch = self._rescale_batch(batch)  # TODO check if this is okay to do 
+            if self.percentile_norm:
+                batch = self._normalize_batch(batch)
             timepoints = range(i, end)
             if self.n_channels > 1:  # repeat channels if needed
                 if self.orig_n_channels > 1 and self.orig_n_channels != self.n_channels:
@@ -409,7 +474,30 @@ class FeatureExtractor(ABC):
         regions = regionprops(image_mask)
         return self._find_bbox_cells(regions, patch_height, patch_width)
     
-    def _nearest_patches(self, coords):
+    def _debug_show_patches(self, embeddings, masks, coords, patch_idxs):
+        import napari
+        v = napari.Viewer()
+        # v.add_labels(masks)
+        e = embeddings.detach().cpu().numpy().swapaxes(1, 2).reshape(-1, self.hidden_state_size, self.final_grid_size, self.final_grid_size).swapaxes(0, 1)
+        v.add_image(
+            e,
+            name="Embeddings",
+        )
+        # add red points at patch indices for the relevant frame
+        points = np.zeros((len(patch_idxs) * self.hidden_state_size, 3))
+        for i, (t, y, x) in enumerate(patch_idxs):
+            point = np.array([t, y, x])
+            points[i * self.hidden_state_size:(i + 1) * self.hidden_state_size] = np.tile(point, (self.hidden_state_size, 1))
+        
+        v.add_points(points, size=1, face_color='red', name='Patch Indices')
+
+        from skimage.transform import resize
+        masks_resized = resize(masks[0], (self.final_grid_size, self.final_grid_size), anti_aliasing=False, order=0, preserve_range=True)
+        v.add_labels(masks_resized)
+        
+        napari.run()
+            
+    def _nearest_patches(self, coords, masks=None):
         """Finds the nearest patches to the detections in the embedding."""
         # find coordinate patches from detections
         patch_coords = self._map_coords_to_model_grid(coords)
@@ -419,10 +507,15 @@ class FeatureExtractor(ABC):
         # load the embeddings and extract the relevant ones
         feats = torch.zeros(len(coords), self.hidden_state_size, device=self.device)
         indices = [y * self.final_grid_size + x for _, y, x in patch_idxs]
-
+        
         unique_timepoints = list(set(t for t, _, _ in patch_idxs))
         # logger.debug(f"Unique timepoints: {unique_timepoints}")
         embeddings = self._load_features()
+        
+        # t = coords[0][0]
+        # if t > 80:
+        #    self._debug_show_patches(embeddings, masks, coords, patch_idxs)
+
         # logger.debug(f"Embeddings shape: {embeddings.shape}")
         embeddings_dict = {t: embeddings[t] for t in unique_timepoints}
         try:
@@ -437,7 +530,7 @@ class FeatureExtractor(ABC):
         return feats
     
     # @average_time_decorator
-    def _mean_patches(self, masks, timepoints, labels, agg=torch.mean):
+    def _agg_patches(self, masks, timepoints, labels, agg=torch.mean):
         """Averages the embeddings of all patches that intersect with the detection.
         
         Args:
@@ -446,8 +539,15 @@ class FeatureExtractor(ABC):
             - labels (np.ndarray): Unique labels of the regions. (n_regions)
             - agg (callable): Aggregation function to use for averaging the embeddings.
         """
-        n_regions = len(timepoints)
-        timepoints_shifted = timepoints - timepoints.min()
+        try:
+            n_regions = len(timepoints)
+            timepoints_shifted = timepoints - timepoints.min()
+        except ValueError:
+            logger.error("Error: issue computing shifted timepoints.")
+            logger.error(f"Regions: {len(timepoints)}")
+            logger.error(f"Timepoints: {timepoints}")
+            return torch.zeros(n_regions, self.hidden_state_size, device=self.device)
+
         feats = torch.zeros(n_regions, self.hidden_state_size, device=self.device)
         patches = []
         times = np.unique(timepoints_shifted)
@@ -463,7 +563,11 @@ class FeatureExtractor(ABC):
             patches_feats = []
             for patch in patches[t][labels[i]]:
                 patches_feats.append(embeddings[t][patch[1] * self.final_grid_size + patch[0]])
-            return agg(torch.stack(patches_feats), dim=0)
+            aggregated = agg(torch.stack(patches_feats), dim=0)
+            # If agg is torch.max, extract only the values
+            if isinstance(aggregated, torch.return_types.max):
+                aggregated = aggregated.values
+            return aggregated
         
         res = joblib.Parallel(n_jobs=8, backend="threading")(
             joblib.delayed(process_region)(i, t) for i, t in enumerate(timepoints_shifted)
@@ -491,15 +595,24 @@ class FeatureExtractor(ABC):
         # load_path = self.save_path / f"{timepoint}_{self.model_name_path}_features.npy"
         if self.embeddings is None:
             load_path = self.save_path / f"{self.model_name_path}_features.npy"
-            features = np.load(load_path)
-            assert features is not None, f"Failed to load features from {load_path}"
-            # check feature shape consistency
-            if features.shape[1] != self.final_grid_size**2 or features.shape[2] != self.hidden_state_size:
-                logger.error(f"Saved embeddings found, but shape {features.shape} does not match expected shape {('n_frames', self.final_grid_size**2, self.hidden_state_size)}.")
-                logger.error("Embeddings will be recomputed.")
+            if load_path.exists():
+                features = np.load(load_path)
+                assert features is not None, f"Failed to load features from {load_path}"
+                if np.any(np.isnan(features)): 
+                    raise RuntimeError(f"NaN values found in features loaded from {load_path}.")
+                # check feature shape consistency
+                if features.shape[1] != self.final_grid_size**2 or features.shape[2] != self.hidden_state_size:
+                    logger.error(f"Saved embeddings found, but shape {features.shape} does not match expected shape {('n_frames', self.final_grid_size**2, self.hidden_state_size)}.")
+                    logger.error("Embeddings will be recomputed.")
+                    return None
+                self.embeddings = torch.tensor(features).to(self.device)
+                logger.info("Saved embeddings loaded.")
+                return self.embeddings
+            else:
+                logger.info(f"No saved embeddings found at {load_path}. Features will be computed.")
                 return None
-            self.embeddings = torch.tensor(features).to(self.device)
-        return self.embeddings
+        else:
+            return self.embeddings
    
     def _check_existing_embeddings(self, n_images):
         """Checks if embeddings for the model already exist."""
@@ -525,11 +638,7 @@ class HieraFeatures(FeatureExtractor):
         save_path: str | Path,
         batch_size: int = 16,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        mode: Literal[
-            # "exact_patch",  # Uses the image patch centered on the detection for embedding
-            "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-            "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-            ] = "nearest_patch",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         # self.input_size = 224
@@ -538,6 +647,7 @@ class HieraFeatures(FeatureExtractor):
         self.final_grid_size = 7 * self.input_mul  # 14x14 grid
         self.n_channels = 3
         self.hidden_state_size = 768
+        self.rescale_batches = False
 
         ##
         self.im_proc_kwargs["size"] = (self.input_size, self.input_size)
@@ -558,7 +668,7 @@ class HieraFeatures(FeatureExtractor):
 
     def _run_model(self, images) -> torch.Tensor:
         """Extracts embeddings from the model."""
-        images = self._rescale_batch(images)
+        # images = self._normalize_batch(images)
         inputs = self.image_processor(images, **self.im_proc_kwargs).to(self.device)
         
         with torch.no_grad():
@@ -577,11 +687,7 @@ class DinoV2Features(FeatureExtractor):
         save_path: str | Path,
         batch_size: int = 16,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        mode: Literal[
-            # "exact_patch",  # Uses the image patch centered on the detection for embedding
-            "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-            "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-            ] = "nearest_patch",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 224
@@ -593,6 +699,7 @@ class DinoV2Features(FeatureExtractor):
         self.im_proc_kwargs["size"] = (self.input_size, self.input_size)
         ##
         self.model = AutoModel.from_pretrained(self.model_name)
+        self.rescale_batches = False
         # config = Dinov2Config.from_pretrained(self.model_name)
         # config.image_size = self.input_size
         
@@ -612,7 +719,6 @@ class DinoV2Features(FeatureExtractor):
         # this way we get only the patch embeddings
         # which are compatible with finding the relevant patches directly
         # in the rest of the code
-        self.final_grid_size = np.sqrt(504)
         return outputs.last_hidden_state[:, 1:, :]
     
 
@@ -626,11 +732,7 @@ class SAMFeatures(FeatureExtractor):
         save_path: str | Path,
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        mode: Literal[
-            # "exact_patch",  # Uses the image patch centered on the detection for embedding
-            "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-            "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-            ] = "nearest_patch",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 1024
@@ -639,6 +741,7 @@ class SAMFeatures(FeatureExtractor):
         self.hidden_state_size = 256
         self.image_processor = SamProcessor.from_pretrained(self.model_name)
         self.model = SamModel.from_pretrained(self.model_name)
+        self.rescale_batches = False
         
         self.model.to(self.device)
         
@@ -661,30 +764,215 @@ class SAM2Features(FeatureExtractor):
         save_path: str | Path,
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-        mode: Literal[
-            # "exact_patch",  # Uses the image patch centered on the detection for embedding
-            "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-            "mean_patches"  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-            ] = "nearest_patch",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 1024
         self.final_grid_size = 64  # 64x64 grid
         self.n_channels = 3   
         self.hidden_state_size = 256        
-        self.model = SAM2ImagePredictor.from_pretrained(self.model_name, device=self.device)
+        self.model = SAM2ImagePredictor.from_pretrained(self.model_name, device=self.device).model
         
         self.batch_return_type = "list[np.ndarray]"
-        self.channel_first = False
-    
+        self.channel_first = True
+        self.rescale_batches = False
+        
+        self._bb_feat_sizes = [
+            (256, 256),
+            (128, 128),
+            (64, 64),
+        ]
+        if self.rescale_batches:
+            print("Rescaling batches to [0, 255] range.")
+        
+    @torch.no_grad()
     def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
         """Extracts embeddings from the model."""
-        with torch.inference_mode(), torch.autocast(self.device, dtype=torch.bfloat16):
-            self.model.set_image_batch(images)
-            
-        features = self.model._features['image_embed']  # (B, hidden_state_size, grid_size, grid_size)
+        with torch.autocast(device_type=self.device), torch.inference_mode():
+            images_ten = torch.stack([torch.tensor(image) for image in images]).to(self.device)
+            # logger.debug(f"Image dtype: {images_ten.dtype}")
+            # logger.debug(f"Image shape: {images_ten.shape}")
+            # logger.debug(f"Image min :  {images_ten.min()}, max: {images_ten.max()}")
+            images_ten = F.interpolate(images_ten, size=(self.input_size, self.input_size), mode="bilinear", align_corners=False)
+            # from torchvision.transforms.functional import resize
+            # images_ten = resize(images_ten, size=(self.input_size, self.input_size))
+            # images_ten = normalize(images_ten, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            out = self.model.image_encoder(images_ten)
+            _, vision_feats, _, _ = self.model._prepare_backbone_features(out)
+            # Add no_mem_embed, which is added to the lowest rest feat. map during training on videos
+            if self.model.directly_add_no_mem_embed:
+                vision_feats[-1] = vision_feats[-1] + self.model.no_mem_embed
+
+            feats = [
+                feat.permute(1, 2, 0).view(feat.shape[1], -1, *feat_size)
+                for feat, feat_size in zip(vision_feats[::-1], self._bb_feat_sizes[::-1])
+            ][::-1]
+            features = feats[-1]
+        # features = self.model.set_image_batch(images)
+        # features = self.model._features['image_embed']
         B, N, H, W = features.shape
         return features.permute(0, 2, 3, 1).reshape(B, H * W, N)  # (B, grid_size**2, hidden_state_size)
     
+    
+@register_backbone("microsam/vit_b_lm", 256)
+@register_backbone("microsam/vit_l_lm", 256)
+class MicroSAMFeatures(FeatureExtractor):
+    model_name = "microsam/vit_b_lm"
+    
+    def __init__(
+        self, 
+        image_size: tuple[int, int],
+        save_path: str | Path,
+        batch_size: int = 4,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        ):
+        if not MICRO_SAM_AVAILABLE:
+            raise ImportError("microSAM is not available. Please install it following the instructions in the documentation.")
+        super().__init__(image_size, save_path, batch_size, device, mode)
+        self.input_size = 1024
+        self.final_grid_size = 64
+        self.n_channels = 3
+        self.hidden_state_size = 256
+        model_name = self.model_name.split("/")[-1]
+        self.model = get_microsam_model(model_name, device=self.device)
+        
+        self.batch_return_type = "list[np.ndarray]"
+        self.channel_first = False
+        self.rescale_batches = False
+        
+    def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
+        """Extracts embeddings from the model."""
+        embeddings = []
+        for image in images:
+            # logger.debug(f"Image shape: {image.shape}")
+            self.model.set_image(image)
+            embedding = self.model.get_image_embedding()  # (1, hidden_state_size, grid_size, grid_size)
+            B, N, H, W = embedding.shape
+            embedding = embedding.permute(0, 2, 3, 1).reshape(B, H * W, N)
+            embeddings.append(embedding)
+        out = torch.stack(embeddings).squeeze()  # (B, grid_size**2, hidden_state_size)
+        if len(out.shape) == 2:
+            out = out.unsqueeze(0)
+        return out
+
+@register_backbone("random", 256)
+class RandomFeatures(FeatureExtractor):
+    model_name = "random"
+
+    def __init__(
+        self, 
+        image_size: tuple[int, int],
+        save_path: str | Path,
+        batch_size: int = 4,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        ):
+        super().__init__(image_size, save_path, batch_size, device, mode)
+        self.input_size = 1024
+        self.final_grid_size = 64
+        self.n_channels = 3
+        self.hidden_state_size = 256
+        
+        self._seed = 42
+        self._generator = torch.Generator(device=device).manual_seed(self._seed)
+        
+    def _run_model(self, images) -> torch.Tensor:
+        """Extracts embeddings from the model."""
+        # Normal distribution
+        # return torch.randn(len(images), self.final_grid_size**2, self.hidden_state_size, generator=self._generator).to(self.device)
+        # Uniform distribution
+        feats = torch.rand(len(images), self.final_grid_size**2, self.hidden_state_size, generator=self._generator).to(self.device)
+        feats = feats * 4 - 2  # [-2, 2]
+        return feats
 
 FeatureExtractor._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
+
+# Embeddings post-processing
+
+from sklearn.decomposition import PCA
+import pickle
+
+class EmbeddingsPCACompression:
+    
+    def __init__(self, original_model_name: str, n_components: int = 15, save_path: str | Path = None):
+        self.original_model_name = original_model_name
+        self.n_components = n_components
+        self.save_path = save_path / "pca_model.pkl" if save_path is not None else None
+        self.pca = PCA(n_components=n_components)
+        self.max_frames = 1500
+        self.random_state = 42
+        self.pca.random_state = self.random_state
+        self.generator = np.random.default_rng(self.random_state)
+    
+    @classmethod
+    def from_pretrained_cfg(cls, cfg: PretrainedFeatureExtractorConfig):
+        return cls(
+            original_model_name=cfg.model_name.replace("/", "-"),
+            n_components=cfg.pca_components,
+            save_path=cfg.pca_preprocessor_path
+        )
+    
+    def fit(self, X: np.ndarray):
+        """Fits the PCA model to the embeddings."""
+        self.pca.fit(X)
+        
+        if self.save_path is not None:
+            if not self.save_path.parents[0].exists():
+                self.save_path.parents[0].mkdir(parents=True, exist_ok=True)
+            with open(self.save_path, 'wb') as f:
+                pickle.dump(self.pca, f)
+        
+    def transform(self, X: np.ndarray) -> np.ndarray:
+        """Transforms the embeddings using the fitted PCA model."""
+        return self.pca.transform(X)
+    
+    def load_from_file(self, path: str | Path):
+        """Loads the PCA model from a file."""
+        if isinstance(path, str):
+            path = Path(path)
+        path = path / "pca_model.pkl" if path.suffix != ".pkl" else path
+        with open(path, 'rb') as f:
+            self.pca = pickle.load(f)
+        logger.info(f"Loaded PCA model from {path}.")
+    
+    def fit_on_embeddings(self, embeddings_source_folders: List[str | Path]):
+        """Fits the PCA model to the embeddings loaded from a file."""
+        
+        embeddings = []
+        N_samples = 0
+        
+        embeddings_paths = []
+        for folder in embeddings_source_folders:
+            for file in Path(folder).rglob("*.npy"):
+                if self.original_model_name in file.name:
+                    embeddings_paths.append(file)
+        
+        if len(embeddings_paths) == 0:
+            return
+        
+        embeddings_paths = self.generator.permutation(embeddings_paths)
+        logger.info(f"Fitting PCA model on {len(embeddings_paths)} embeddings files.")
+        logger.info(f"Files :")
+        for p in embeddings_paths:
+            logger.info(f" - {p}")
+        logger.info("*" * 50)
+        
+        for path in embeddings_paths:
+            if isinstance(path, str):
+                path = Path(path)
+            if not path.exists():
+                raise FileNotFoundError(f"File {path} does not exist.")
+            emb = np.load(path)
+            N_samples += emb.shape[0]
+            if N_samples > self.max_frames:
+                logger.info(f"Amount of loaded frames exceeds {self.max_frames} limit for PCA computation.")
+                break
+            else:
+                embeddings.append(emb)
+        
+        embeddings = np.concatenate(embeddings, axis=0)
+        embeddings = embeddings.reshape(-1, embeddings.shape[-1])
+        self.fit(embeddings)
+        logger.info(f"Fitted PCA model with {self.n_components} components on {N_samples} frames.")
+        

@@ -10,6 +10,7 @@ import yaml
 from tqdm import tqdm
 
 from ..data import build_windows, get_features, load_tiff_timeseries
+from ..data import pretrained_features as ft
 from ..tracking import TrackGraph, build_graph, track_greedy
 from ..utils import normalize
 from .model import TrackingTransformer
@@ -67,6 +68,9 @@ class Trackastra:
 
         self.transformer = transformer.to(self.device)
         self.train_args = train_args
+        self.imgs_path = None
+        self.masks_path = None
+        self.feature_extractor = None
 
     @classmethod
     def from_folder(cls, dir: Path, device: str | None = None):
@@ -99,6 +103,8 @@ class Trackastra:
         features = get_features(
             detections=masks,
             imgs=imgs,
+            features=self.train_args["features"],
+            feature_extractor=self.feature_extractor,
             ndim=self.transformer.config["coord_dim"],
             n_workers=n_workers,
             progbar_class=progbar_class,
@@ -164,6 +170,19 @@ class Trackastra:
         progbar_class=tqdm,
         **kwargs,
     ) -> TrackGraph:
+        if self.train_args["features"] == "pretrained_feats":
+            additional_features = self.train_args.get(
+                "pretrained_feats_additional_props", None
+            )
+            self.feature_extractor = ft.FeatureExtractor.from_model_name(
+                self.train_args["pretrained_feats_model"],
+                imgs[0].shape[-2:], 
+                save_path=self.imgs_path / "embeddings",
+                mode=self.train_args["pretrained_feats_mode"],
+                device="cuda" if torch.cuda.is_available() else "cpu",
+                additional_features=additional_features,
+            )
+        
         predictions = self._predict(imgs, masks, progbar_class=progbar_class)
         track_graph = self._track_from_predictions(predictions, mode=mode, **kwargs)
         return track_graph
@@ -194,6 +213,9 @@ class Trackastra:
         if not masks_path.exists():
             raise FileNotFoundError(f"{masks_path=} does not exist.")
 
+        self.imgs_path = imgs_path
+        self.masks_path = masks_path
+        
         if imgs_path.is_dir():
             imgs = load_tiff_timeseries(imgs_path)
         else:

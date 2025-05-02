@@ -36,6 +36,11 @@ from trackastra.data import (
     CTCData,
     collate_sequence_padding,
 )
+from trackastra.data.pretrained_features import (
+    AVAILABLE_PRETRAINED_BACKBONES,
+    PretrainedFeatureExtractorConfig,
+)
+from trackastra.data.wrfeat import _PROPERTIES
 from trackastra.model import TrackingTransformer
 from trackastra.utils import (
     blockwise_causal_norm,
@@ -48,7 +53,8 @@ from trackastra.utils import (
     str2bool,
 )
 
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
@@ -83,7 +89,6 @@ class WarmupCosineLRScheduler(LRScheduler):
         max_epochs,
         cosine_final: float = 0.001,
         last_epoch=-1,
-        verbose=False,
     ):
         """Use cosine_final to switch on/off the cosine annealing.
 
@@ -93,7 +98,7 @@ class WarmupCosineLRScheduler(LRScheduler):
         self.warmup_epochs = warmup_epochs
         self.max_epochs = max_epochs
         self.cosine_final = cosine_final
-        super().__init__(optimizer, last_epoch, verbose)
+        super().__init__(optimizer, last_epoch)
 
     def get_lr(self):
         if not self._get_lr_called_within_step:
@@ -182,6 +187,8 @@ class WrappedLightningModule(pl.LightningModule):
         tracking_frequency: int = -1,  # log TRA metrics every that epochs
         batch_val_tb_idx: int = 0,  # the batch index to visualize in tensorboard
         div_upweight: float = 20,
+        # per_param_clipping: bool = False,
+        weight_decay: float = 0.01,
     ):
         super().__init__()
 
@@ -196,12 +203,15 @@ class WrappedLightningModule(pl.LightningModule):
         self.batch_val_tb = None
 
         self.lr = learning_rate
+        self.weight_decay = weight_decay
         self.tracking_frequency = tracking_frequency
         self.warmup_epochs = warmup_epochs
         self.max_epochs = max_epochs
         self.div_upweight = div_upweight
-
+        # self.per_param_clipping = per_param_clipping
+    
     def _common_step(self, batch, eps=torch.finfo(torch.float32).eps):
+        # torch.autograd.set_detect_anomaly(True)
         feats = batch["features"]
         coords = batch["coords"]
         A = batch["assoc_matrix"]
@@ -209,21 +219,26 @@ class WrappedLightningModule(pl.LightningModule):
         padding_mask = batch["padding_mask"]
         padding_mask = padding_mask.bool()
         
-        # torch.autograd.set_detect_anomaly(True)
+        if torch.any(torch.isnan(feats)):
+            nan_dims = torch.any(torch.isnan(feats), dim=-1)
+            raise ValueError("NaN in features in dimensions: ", nan_dims)
+        if torch.any(torch.isnan(coords)):
+            raise ValueError("NaN in coords")
+
         A_pred = self.model(coords, feats, padding_mask=padding_mask)
         
         # remove inf values that might happen due to float16 numerics
-        # A_pred.clamp_(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
-        # above call interferes with backward as it is an inplace operation
-        A_pred = A_pred.clamp(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
+        A_pred.clamp_(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
+        # above call might interfere with backward as it is an inplace operation
+        # A_pred = A_pred.clamp(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
 
         mask_invalid = torch.logical_or(
             padding_mask.unsqueeze(1), padding_mask.unsqueeze(2)
         )
 
-        # A_pred[mask_invalid] = 0
-        # above call interferes with backward as it is an inplace operation in "linear" causal norm
-        A_pred = A_pred.masked_fill(mask_invalid, 0)
+        A_pred[mask_invalid] = 0
+        # above call might interfere with backward as it is an inplace operation in "linear" causal norm
+        # A_pred = A_pred.masked_fill(mask_invalid, 0)
         loss = self.criterion(A_pred, A)
             
         if self.causal_norm != "none":
@@ -236,7 +251,7 @@ class WrappedLightningModule(pl.LightningModule):
                     for _A, _t, _m in zip(A_pred, timepoints, mask_invalid)
                 ]
             )
-            with torch.cuda.amp.autocast(enabled=False):
+            with torch.amp.autocast(enabled=False, device_type=str(self.device)):
                 if len(A) > 0:
                     # debug
                     if torch.any(torch.isnan(A_pred_soft)):
@@ -267,6 +282,9 @@ class WrappedLightningModule(pl.LightningModule):
                 # Keep the non-softmaxed loss for numerical stability
                 loss = 0.01 * loss + self.criterion_softmax(A_pred_soft, A)
 
+        if torch.any(torch.isnan(loss)):
+            raise ValueError("NaN after loss summing")
+        
         # Reweighting does not need gradients
         with torch.no_grad():
             block_sum1 = torch.stack(
@@ -299,6 +317,9 @@ class WrappedLightningModule(pl.LightningModule):
             mask.sum(dim=(1, 2), keepdim=True) + eps
         )
         loss_per_sample = loss_normalized.sum(dim=(1, 2))
+        
+        if torch.any(torch.isnan(loss_per_sample)):
+            raise ValueError("NaN in loss_per_sample after reduction")
 
         # Hack: weight larger samples a little more...
         prefactor = torch.pow(mask.sum(dim=(1, 2)), 0.2)
@@ -325,7 +346,7 @@ class WrappedLightningModule(pl.LightningModule):
             return None
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=0.01)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr, weight_decay=self.weight_decay)
         return dict(
             optimizer=optimizer,
             lr_scheduler=WarmupCosineLRScheduler(
@@ -334,9 +355,15 @@ class WrappedLightningModule(pl.LightningModule):
         )
 
     def on_before_optimizer_step(self, optimizer):
-        from lightning.pytorch.utilities import grad_norm
+        # self.trainer.precision_plugin.scaler.unscale_(optimizer)
+        # from torch.nn.utils import clip_grad_norm_
+        # if self.per_param_clipping:
+        #     for param in self.model.parameters():
+        #         if param.grad is not None:
+        #             clip_grad_norm_(param, max_norm=1.0)
         # Compute the 2-norm for each layer
         # If using mixed precision, the gradients are already unscaled here
+        from lightning.pytorch.utilities import grad_norm
         norms = grad_norm(self.model, norm_type=2)
         self.log_dict(norms)
         
@@ -344,8 +371,9 @@ class WrappedLightningModule(pl.LightningModule):
         out = self._common_step(batch)
         loss = out["loss"]
         if torch.isnan(loss):
-            print("NaN loss, skipping")
-            return None
+            # print("NaN loss, skipping")
+            # return None
+            raise ValueError("NaN loss")
 
         self.log(
             "train_loss",
@@ -387,7 +415,7 @@ class WrappedLightningModule(pl.LightningModule):
         loss = out["loss"]
         if torch.isnan(loss):
             print("NaN loss, skipping")
-            return None
+            raise ValueError("NaN loss")
 
         self.log(
             "val_loss",
@@ -746,6 +774,12 @@ def _init_wandb(project, name, config):
     _ = wandb.init(project=project, name=name, config=config)
 
 
+@rank_zero_only
+def create_wandb_logger(run_name, wandb_project):
+    wandb_logger = WandbLogger(name=run_name, project=wandb_project)
+    return wandb_logger
+
+
 def train(args):
     args.seed = seed(args.seed)
     if args.model is None:
@@ -785,6 +819,8 @@ def train(args):
             train_logger = TensorBoardLogger(logdir, name="tb")
         elif args.logger == "wandb":
             train_logger = WandbLogger(name=run_name, project=args.wandb_project)
+            # train_logger = create_wandb_logger(run_name, args.wandb_project)
+            # train_logger.log_hyperparams(training_args)
 
             # init here to get an alert on job failure even before training
             _init_wandb(project=args.wandb_project, name=run_name, config=vars(args))
@@ -800,6 +836,37 @@ def train(args):
     if logdir is not None and logdir.exists() and not args.resume:
         raise ValueError(
             f'Logdir {logdir} exists, set "--resume t"  if you want to overwrite'
+        )
+        
+    pretrained_config = None
+    if args.features == "pretrained_feats":
+        if args.pretrained_feats_model is None:
+            raise ValueError(
+                "Pretrained model must be defined if pretrained features are in use."
+                f"Available models: {AVAILABLE_PRETRAINED_BACKBONES.keys()}"
+            )
+        if args.pretrained_feats_model not in AVAILABLE_PRETRAINED_BACKBONES:
+            raise ValueError(
+                f"Unknown pretrained model {args.pretrained_feats_model}, available: {AVAILABLE_PRETRAINED_BACKBONES.keys()}"
+            )
+        if args.pretrained_feats_mode is None:
+            raise ValueError(
+                "Pretrained mode must be defined if pretrained features are in use."
+            )
+        emb_save_path = None if args.cachedir is None else Path(args.cachedir).resolve()
+        if not emb_save_path.exists():
+            emb_save_path.mkdir(parents=False, exist_ok=True)
+        pca_save_path = (
+            Path(logdir) / "pca" if args.pretrained_feats_pca_ncomp else None
+        )
+        
+        pretrained_config = PretrainedFeatureExtractorConfig(
+            model_name=args.pretrained_feats_model,
+            mode=args.pretrained_feats_mode,
+            save_path=emb_save_path,
+            additional_features=args.pretrained_feats_additional_props,
+            pca_components=args.pretrained_feats_pca_ncomp,
+            pca_preprocessor_path=pca_save_path,
         )
 
     n_gpus = torch.cuda.device_count() if args.distributed else 1
@@ -820,6 +887,7 @@ def train(args):
             sanity_dist=args.sanity_dist,
             crop_size=args.crop_size,
             compress=args.compress,
+            pretrained_backbone_config=pretrained_config,
         )
         dummy_model = TrackingTransformer(
             coord_dim=dummy_data.ndim,
@@ -848,6 +916,8 @@ def train(args):
             tracking_frequency=args.tracking_frequency,
             batch_val_tb_idx=0,
             div_upweight=args.div_upweight,
+            # per_param_clipping=args.clip_grad_per_param,
+            weight_decay=args.weight_decay,
         )
         dummy_model_lightning.to(device)
         preallocate_memory(
@@ -871,7 +941,7 @@ def train(args):
 
     if args.only_prechecks:
         return locals()
-
+    
     dataset_kwargs = dict(
         ndim=args.ndim,
         detection_folders=args.detection_folders,
@@ -883,6 +953,7 @@ def train(args):
         sanity_dist=args.sanity_dist,
         crop_size=args.crop_size,
         compress=args.compress,
+        pretrained_backbone_config=pretrained_config,
     )
     sampler_kwargs = dict(
         batch_size=args.batch_size,
@@ -903,7 +974,7 @@ def train(args):
     datamodule = BalancedDataModule(
         input_train=args.input_train,
         input_val=args.input_val,
-        cachedir=args.cachedir,
+        cachedir=args.cachedir if args.cache else None,
         augment=args.augment,
         distributed=args.distributed,
         dataset_kwargs=dataset_kwargs,
@@ -925,14 +996,14 @@ def train(args):
 
     callbacks.append(pl.pytorch.callbacks.Timer(interval="epoch"))
     # # Mostly for stopping broken runs
-    # callbacks.append(
-    #     pl.pytorch.callbacks.EarlyStopping(
-    #         monitor="val_loss",
-    #         patience=args.epochs // 6,
-    #         mode="min",
-    #         verbose=True,
-    #     )
-    # )
+    callbacks.append(
+        pl.pytorch.callbacks.EarlyStopping(
+            monitor="val_loss",
+            patience=args.epochs // 6,
+            mode="min",
+            verbose=True,
+        )
+    )
 
     if args.example_images:
         callbacks.append(ExampleImages())
@@ -951,8 +1022,11 @@ def train(args):
         else:
             model = TrackingTransformer.from_folder(fpath, args=args)
     else:
-        # FIXME(cy) hardcoded feat_dim
-        feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12
+        # feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12 
+        if args.features == "pretrained_feats":  # TODO find a way to truly automate this
+            feat_dim = pretrained_config.feat_dim
+        else:
+            feat_dim = CTCData.get_feat_dim(args.features, args.ndim)
         model = TrackingTransformer(
             # coord_dim=datasets["train"].datasets[0].ndim,
             coord_dim=args.ndim,
@@ -982,6 +1056,8 @@ def train(args):
         tracking_frequency=args.tracking_frequency,
         batch_val_tb_idx=batch_val_tb_idx,
         div_upweight=args.div_upweight,
+        # per_param_clipping=args.clip_grad_per_param,
+        weight_decay=args.weight_decay,
     )
     # Compiling does not work!
     # model_lightning = torch.compile(model_lightning)
@@ -1002,6 +1078,7 @@ def train(args):
                 tracking_frequency=args.tracking_frequency,
                 batch_val_tb_idx=batch_val_tb_idx,
                 div_upweight=args.div_upweight,
+                weight_decay=args.weight_decay,
             )
         else:
             logging.warning(f"No checkpoint found in {logdir}")
@@ -1023,7 +1100,7 @@ def train(args):
         profiler = None
 
     trainer = pl.Trainer(
-        accelerator="cuda" if torch.cuda.is_available() else 'cpu',
+        accelerator="auto",
         strategy=strategy,
         devices=n_gpus,
         precision="16-mixed" if args.mixedp else 32,
@@ -1065,7 +1142,8 @@ def parse_train_args():
         "--config",
         is_config_file=True,
         help="config file path",
-        default="configs/vanvliet.yaml",
+        # default="configs/vanvliet.yaml",
+        default=str(Path("./scripts/example_config.yaml").resolve()),
     )
     parser.add_argument("-o", "--outdir", type=str, default="runs")
     parser.add_argument("--name", type=str, help="Name to append to timestamp")
@@ -1132,6 +1210,7 @@ def parse_train_args():
             "patch",
             "patch_regionprops",
             "wrfeat",
+            "pretrained_feats",
         ],
         default="wrfeat",
     )
@@ -1215,6 +1294,40 @@ def parse_train_args():
             "Inversely weight datasets by number of samples (to counter dataset size"
             " imbalance)"
         ),
+    )
+    # Pretrained feats + extra arguments
+    parser.add_argument(
+        "--pretrained_feats_model",
+        type=str,
+        choices=list(AVAILABLE_PRETRAINED_BACKBONES.keys()),
+        default=None,
+        help="If mode is pretrained_feats, specify the model to use for feature extraction",
+    )
+    parser.add_argument(
+        "--pretrained_feats_mode",
+        type=str,
+        choices=["nearest_patch", "mean_patches", "max_patches"],
+        default=None,
+        help="If mode is pretrained_feats, specify the mode to use for feature extraction",
+    )
+    parser.add_argument(
+        "--pretrained_feats_additional_props",
+        type=str,
+        choices=list(_PROPERTIES.keys()),
+        default=None,
+        help="Additional regionprops features to use in addition to pretrained model embeddings",
+    )
+    parser.add_argument(
+        "--pretrained_feats_pca_ncomp",
+        type=int,
+        default=None,
+        help="Number of components to use for PCA dimensionality reduction. If None, no PCA is applied.",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=0.01,
+        help="Weight decay for the AdamW optimizer",
     )
 
     args, unknown_args = parser.parse_known_args()

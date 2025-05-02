@@ -2,13 +2,15 @@
 WindowedRegionFeatures (WRFeatures) is a class that holds regionprops features for a windowed track region.
 """
 
+from __future__ import annotations
+
 import itertools
 import logging
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from collections.abc import Iterable, Sequence
 from functools import reduce
-from typing import ClassVar, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import joblib
 import numpy as np
@@ -17,9 +19,11 @@ from edt import edt
 from skimage.measure import regionprops, regionprops_table
 from tqdm import tqdm
 
-from trackastra.data.pretrained_features import FeatureExtractor
+if TYPE_CHECKING:
+    from trackastra.data.pretrained_features import FeatureExtractor
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 _PROPERTIES = {
     "regionprops": (
@@ -120,13 +124,13 @@ class WRFeatures:
             raise KeyError(f"Key {key} not found in features")
 
     @classmethod
-    def concat(cls, feats: Sequence["WRFeatures"]) -> "WRFeatures":
+    def concat(cls, feats: Sequence[WRFeatures]) -> WRFeatures:
         """Concatenate multiple WRFeatures into a single one."""
         if len(feats) == 0:
             raise ValueError("Cannot concatenate empty list of features")
         return reduce(lambda x, y: x + y, feats)
 
-    def __add__(self, other: "WRFeatures") -> "WRFeatures":
+    def __add__(self, other: WRFeatures) -> WRFeatures:
         """Concatenate two WRFeatures."""
         if self.ndim != other.ndim:
             raise ValueError("Cannot concatenate features of different dimensions")
@@ -145,15 +149,10 @@ class WRFeatures:
         return WRFeatures(
             coords=coords, labels=labels, timepoints=timepoints, features=features
         )
-
-    @classmethod
-    def from_mask_img(
-        cls,
-        mask: np.ndarray,
-        img: np.ndarray,
-        properties: str = "regionprops2",
-        t_start: int = 0,
-    ):
+        
+    @staticmethod
+    def get_regionprops_features(properties, mask, img, t_start=0):
+        """Extracts regionprops features from a mask and image."""
         _ntime, ndim = mask.shape[0], mask.ndim - 1
         if ndim not in (2, 3):
             raise ValueError("Only 2D or 3D data is supported")
@@ -200,6 +199,20 @@ class WRFeatures:
         if df.isnull().values.any():
             raise ValueError("NaNs found in features DataFrame")
 
+        return df, coords, labels, timepoints, properties
+
+    @classmethod
+    def from_mask_img(
+        cls,
+        mask: np.ndarray,
+        img: np.ndarray,
+        properties: str = "regionprops",
+        t_start: int = 0,
+    ):
+        df, coords, labels, timepoints, properties = cls.get_regionprops_features(
+            properties, mask, img, t_start=t_start
+        )
+
         features = OrderedDict(
             (
                 p,
@@ -229,43 +242,52 @@ class WRPretrainedFeatures(WRFeatures):
         labels: np.ndarray,
         timepoints: np.ndarray,
         features: OrderedDict[np.ndarray],
+        additional_properties: str | None = None
     ):
         super().__init__(coords, labels, timepoints, features)
-        
+        self.additional_properties = additional_properties
+
     @classmethod
-    def from_loaded_pretrained_features(
+    def from_mask_img():
+        raise NotImplementedError(
+            "Please use from_pretrained_features instead of from_mask_img"
+        )
+    
+    @classmethod
+    def from_pretrained_features(
         cls,
         img: np.ndarray,
         mask: np.ndarray,
         feature_extractor: FeatureExtractor,
         t_start: int = 0,
-    ) -> 'WRPretrainedFeatures':
+        additional_properties: str | None = None,
+    ) -> WRPretrainedFeatures:
 
         ndim = img.ndim - 1
         if ndim not in (2, 3):
             raise ValueError("Only 2D or 3D data is supported")
             
-        df_properties = ("label", "centroid")
-        dfs = []
-        for i, (y, x) in enumerate(zip(mask, img)):
-            _df = pd.DataFrame(
-                regionprops_table(y, intensity_image=x, properties=df_properties)
-            )
-            _df["timepoint"] = i + t_start
+        df, coords, labels, timepoints, properties = cls.get_regionprops_features(
+            additional_properties, mask, img, t_start=t_start
+        )
 
-            dfs.append(_df)
-        df = pd.concat(dfs)
-
-        timepoints = df["timepoint"].values.astype(np.int32)
-        labels = df["label"].values.astype(np.int32)
-        coords = df[[f"centroid-{i}" for i in range(ndim)]].values.astype(np.float32)
-
-        _, features = feature_extractor._extract_embedding(mask, timepoints, labels, coords) 
+        _, features = feature_extractor.extract_embedding(mask, timepoints, labels, coords) 
         features = features.detach().cpu().numpy()
         feats_dict = OrderedDict(pretrained_feats=features)
+        # Add additional features similarly to WRFeatures if any
+        if additional_properties is not None:
+            for p in properties:
+                feats_dict[p] = np.stack(
+                    [
+                        df[c].values.astype(np.float32)
+                        for c in df.columns
+                        if c.startswith(p)
+                    ],
+                    axis=-1,
+                )
         
         return cls(
-            coords=coords, labels=labels, timepoints=timepoints, features=feats_dict,
+            coords=coords, labels=labels, timepoints=timepoints, features=feats_dict, additional_properties=additional_properties
         )
 
 # Augmentations
@@ -353,11 +375,30 @@ class WRBaseAugmentation(ABC):
     def __call__(self, features: WRFeatures):
         if self._rng.rand() > self._p or len(features) == 0:
             return features
-        return self._augment(features)
+        feats = self._augment(features)
+        self.check_features(feats)
+        return feats
 
     @abstractmethod
     def _augment(self, features: WRFeatures):
         raise NotImplementedError()
+    
+    def check_features(self, features: WRFeatures):
+        """Check if features are valid."""
+        if not isinstance(features, WRFeatures):
+            raise ValueError(f"Expected WRFeatures, got {type(features)}")
+        if len(features) == 0:
+            raise ValueError("Empty features")
+        
+        for k, f in features.features.items():
+            if np.any(np.isnan(f)):
+                logger.warning(f"NaNs found in {k} after {self.__class__.__name__} augmentation")
+            if np.any(np.isinf(f)):
+                logger.warning(f"Infs found in {k} after {self.__class__.__name__} augmentation")
+            if np.any(np.all(f == 0, axis=-1)):
+                logger.warning(f"Empty {k} after {self.__class__.__name__} augmentation")
+        
+        return True
 
 
 class WRRandomFlip(WRBaseAugmentation):
@@ -377,7 +418,7 @@ class WRRandomFlip(WRBaseAugmentation):
             if f == 1:
                 points[:, ndim - i - 1] *= -1
                 M[i, i] = -1
-        
+                
         feats = OrderedDict(
             (k, _transform_affine(k, v, M)) for k, v in features.features.items()
         )
@@ -415,11 +456,11 @@ def _transform_affine(k: str, v: np.ndarray, M: np.ndarray):
     ndim = len(M)
     
     if k == "area":
-        v = np.linalg.det(M) * v
+        v = np.abs(np.linalg.det(M)) * v
     elif k == "equivalent_diameter_area":
         # v = np.linalg.det(M) ** (1 / len(M)) * v
         v = np.abs(np.linalg.det(M)) ** (1 / len(M)) * v
-        # TODO check the bhavior of equivalent_diameter_area in 3D regionprops
+        # TODO check the behavior of equivalent_diameter_area in 3D regionprops
     elif k == "inertia_tensor":
         # v' = M * v  * M^T
         v = v.reshape(-1, ndim, ndim)        
@@ -456,6 +497,7 @@ class WRRandomAffine(WRBaseAugmentation):
         - "area"
         - "equivalent_diameter_area"
         - "inertia_tensor"
+        - "coords"
     """
     def __init__(
         self,
@@ -553,6 +595,7 @@ class WRRandomOffset(WRBaseAugmentation):
 
         offset = self._rng.uniform(*self.offset, features.coords.shape)
         coords = features.coords + offset
+        
         return WRFeatures(
             coords=coords,
             labels=features.labels,
@@ -590,8 +633,13 @@ class WRAugmentationPipeline:
         self.augmentations = augmentations
 
     def __call__(self, feats: WRFeatures):
+        # logger.debug(f"Applying {len(self.augmentations)} augmentations")
         for aug in self.augmentations:
+            # logger.debug(f"Applying {aug.__class__.__name__} augmentation")
             feats = aug(feats)
+        
+        # logger.debug(f"Coords : {feats.coords}")
+            
         return feats
 
 # Factory functions
@@ -667,42 +715,56 @@ class AugmentationFactory:
 def get_features(
     detections: np.ndarray,
     imgs: np.ndarray | None = None,
-    features: Literal["none", "wrfeat"] = "wrfeat",
+    features: Literal["none", "wrfeat", "pretrained_feats"] = "wrfeat",
     ndim: int = 2,
     n_workers=0,
     progbar_class=tqdm,
+    feature_extractor: FeatureExtractor | None = None,
 ) -> list[WRFeatures]:
     """Extracts features from detections and images."""
     detections = _check_dimensions(detections, ndim)
     imgs = _check_dimensions(imgs, ndim)
     logger.info(f"Extracting features from {len(detections)} detections")
-    if n_workers > 0:
-        features = joblib.Parallel(n_jobs=n_workers)(
-            joblib.delayed(WRFeatures.from_mask_img)(
-                # New axis for time component
-                mask=mask[np.newaxis, ...],
-                img=img[np.newaxis, ...],
-                t_start=t,
+    if features in ["none", "wrfeat"]:
+        if n_workers > 0:
+            features = joblib.Parallel(n_jobs=n_workers)(
+                joblib.delayed(WRFeatures.from_mask_img)(
+                    # New axis for time component
+                    mask=mask[np.newaxis, ...],
+                    img=img[np.newaxis, ...],
+                    t_start=t,
+                )
+                for t, (mask, img) in progbar_class(
+                    enumerate(zip(detections, imgs)),
+                    total=len(imgs),
+                    desc="Extracting features",
+                )
             )
-            for t, (mask, img) in progbar_class(
-                enumerate(zip(detections, imgs)),
-                total=len(imgs),
-                desc="Extracting features",
+        else:
+            logger.info("Using single process for feature extraction")
+            features = tuple(
+                WRFeatures.from_mask_img(
+                    mask=mask[np.newaxis, ...],
+                    img=img[np.newaxis, ...],
+                    t_start=t,
+                )
+                for t, (mask, img) in progbar_class(
+                    enumerate(zip(detections, imgs)),
+                    total=len(imgs),
+                    desc="Extracting features",
+                )
             )
-        )
+    elif features == "pretrained_feats":
+        feature_extractor.precompute_region_embeddings(imgs)
+        features = [
+                    WRPretrainedFeatures.from_pretrained_features(
+                        img=img[np.newaxis], mask=mask[np.newaxis], feature_extractor=feature_extractor, t_start=t, additional_properties=feature_extractor.additional_features,
+                    )
+                    for t, (mask, img) in enumerate(zip(detections, imgs))
+                ]
     else:
-        logger.info("Using single process for feature extraction")
-        features = tuple(
-            WRFeatures.from_mask_img(
-                mask=mask[np.newaxis, ...],
-                img=img[np.newaxis, ...],
-                t_start=t,
-            )
-            for t, (mask, img) in progbar_class(
-                enumerate(zip(detections, imgs)),
-                total=len(imgs),
-                desc="Extracting features",
-            )
+        raise ValueError(
+            f"Unknown feature extraction method {features}. Available: 'none', 'wrfeat' or 'pretrained_feats'."
         )
 
     return features

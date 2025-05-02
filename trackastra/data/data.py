@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import logging
 from collections.abc import Sequence
 from pathlib import Path
 from timeit import default_timer
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 import joblib
 import lz4.frame
@@ -32,12 +34,6 @@ from trackastra.data.features import (
     extract_features_regionprops,
 )
 from trackastra.data.matching import matching
-from trackastra.data.pretrained_features import (
-    FeatureExtractor,
-    PretrainedBackboneType,
-    PretrainedFeatsExtractionMode,
-    PretrainedFeatureExtractorConfig,
-)
 
 # from ..utils import blockwise_sum, normalize
 from trackastra.utils import blockwise_sum, normalize
@@ -45,6 +41,14 @@ from trackastra.utils import blockwise_sum, normalize
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.INFO)
 logger.setLevel(logging.DEBUG)  # FIXME go back to INFO for release
+
+if TYPE_CHECKING:
+    from trackastra.data.pretrained_features import (
+        PretrainedBackboneType,
+        PretrainedFeatsExtractionMode,
+        PretrainedFeatureExtractorConfig,
+        EmbeddingsPCACompression,
+    )
 
 
 def _filter_track_df(df, start_frame, end_frame, downscale):
@@ -122,7 +126,35 @@ def debug_function(f):
 
 
 class CTCData(Dataset):
-    feature_extractor = None
+    """Cell Tracking Challenge data loader."""
+    # Amount of feature per mode per dimension
+    FEATURES_DIMENSIONS: ClassVar = {
+        "wrfeat": {
+            2: 8,
+            3: 12,
+        },
+        "regionprops": {
+            2: 7,
+            3: 11,
+        },
+        "regionprops2": {
+            2: 6,
+            3: 11,
+        },
+        "patch": {
+            2: 256,
+            3: 256,
+        },
+        "patch_regionprops": {
+            2: 256 + 5,
+            3: 256 + 8,
+        },
+        "none": {
+            2: 0,
+            3: 0,
+        }
+        # "pretrained_feats" -> defined by PretrainedFeatureExtractorConfig.feat_dim
+    }
 
     def __init__(
         self,
@@ -150,39 +182,42 @@ class CTCData(Dataset):
         return_dense: bool = False,
         compress: bool = False,
         pretrained_backbone_config: PretrainedFeatureExtractorConfig | None = None,
+        pca_preprocessor: EmbeddingsPCACompression | None = None,
         **kwargs,
     ) -> None:
-        """Cell Tracking Challenge data loader.
-
-        Args:
-            root (str):
-                Folder containing the CTC TRA folder.
-            ndim (int):
-                Number of dimensions of the data. Defaults to 2d
-                (if ndim=3 and data is two dimensional, it will be cast to 3D)
-            detection_folders:
-                List of relative paths to folder with detections.
-                Defaults to ["TRA"], which uses the ground truth detections.
-            window_size (int):
-                Window size for transformer.
-            slice_pct (tuple):
-                Slice the dataset by percentages (from, to).
-            augment (int):
-                if 0, no data augmentation. if > 0, defines level of data augmentation.
-            features (str):
-                Types of features to use.
-            sanity_dist (bool):
-                Use euclidian distance instead of the association matrix as a target.
-            crop_size (tuple):
-                Size of the crops to use for augmentation. If None, no cropping is used.
-            return_dense (bool):
-                Return dense masks and images in the data samples.
-            compress (bool):
-                Compress elements/remove img if not needed to save memory for large datasets
-            pretrained_backbone_config (PretrainedFeatureExtractorConfig):
-                Configuration for the pretrained backbone.
-                If mode is set to "pretrained_feats", this configuration is used to extract features.
-                Ignored otherwise.
+        """Args:
+        root (str):
+            Folder containing the CTC TRA folder.
+        ndim (int):
+            Number of dimensions of the data. Defaults to 2d
+            (if ndim=3 and data is two dimensional, it will be cast to 3D)
+        detection_folders:
+            List of relative paths to folder with detections.
+            Defaults to ["TRA"], which uses the ground truth detections.
+        window_size (int):
+            Window size for transformer.
+        slice_pct (tuple):
+            Slice the dataset by percentages (from, to).
+        augment (int):
+            if 0, no data augmentation. if > 0, defines level of data augmentation.
+        features (str):
+            Types of features to use.
+        sanity_dist (bool):
+            Use euclidian distance instead of the association matrix as a target.
+        crop_size (tuple):
+            Size of the crops to use for augmentation. If None, no cropping is used.
+        return_dense (bool):
+            Return dense masks and images in the data samples.
+        compress (bool):
+            Compress elements/remove img if not needed to save memory for large datasets
+        pretrained_backbone_config (PretrainedFeatureExtractorConfig):
+            Configuration for the pretrained backbone.
+            If mode is set to "pretrained_feats", this configuration is used to extract features.
+            Ignored otherwise.
+        pca_preprocessor (EmbeddingsPCACompression):
+            PCA preprocessor for the pretrained features.
+            If mode is set to "pretrained_feats", this is used to reduce the dimensionality of the features.
+            Ignored otherwise.
         """
         super().__init__()
 
@@ -237,17 +272,18 @@ class CTCData(Dataset):
             self.img_folder = self._guess_img_folder(self.root)
         logger.info(f"IMG (guessed):\t{self.img_folder}")
 
-        self.pretrained_config = None
+        self._pretrained_config = None
         if features == "pretrained_feats": 
             if pretrained_backbone_config is None:
                 raise ValueError("Pretrained backbone config must be provided for pretrained features mode.")
             self.pretrained_config = pretrained_backbone_config
             if self.pretrained_config.save_path is None:
                 self.pretrained_config.save_path = self.img_folder
+            self.FEATURES_DIMENSIONS["pretrained_feats"] = self.pretrained_config.feat_dim
         
-        self.feat_dim, self.augmenter, self.cropper = self._setup_features_augs(
-            ndim, features, augment, crop_size
-        )
+        self.augment_level = augment
+        self.crop_size = crop_size
+        self.augmenter, self.cropper = self._setup_features_augs()
 
         if window_size <= 1:
             raise ValueError("window must be >1")
@@ -264,7 +300,10 @@ class CTCData(Dataset):
         # Pretrained model attributes for feature extraction if specified
         self._pretrained_model_input_size_factor = 1
         self.feature_extractor_input_size = None
+        self.feature_extractor_save_path = None
         self.pretrained_features = None
+        self.feature_extractor = None
+        self.pca_preprocessor = pca_preprocessor
 
         start = default_timer()
 
@@ -292,11 +331,36 @@ class CTCData(Dataset):
         if kwargs:
             logger.warning(f"Unused kwargs: {kwargs}")
 
-    # def from_ctc
-
+    @property
+    def feat_dim(self):
+        return self.FEATURES_DIMENSIONS[self.features][self.ndim]
+    
+    @property
+    def pretrained_config(self):
+        return self._pretrained_config
+    
+    @pretrained_config.setter
+    def pretrained_config(self, config: PretrainedFeatureExtractorConfig):
+        if isinstance(config, dict):
+            from trackastra.data.pretrained_features import PretrainedFeatureExtractorConfig
+            config = PretrainedFeatureExtractorConfig.from_dict(config)
+        try:
+            self.FEATURES_DIMENSIONS["pretrained_feats"] = config.feat_dim
+        except AttributeError as e:
+            if isinstance(config, dict):
+                self.FEATURES_DIMENSIONS["pretrained_feats"] = config["feat_dim"]
+            else:
+                raise e
+        self._pretrained_config = config
+    
+    @staticmethod
+    def get_feat_dim(features, ndim, ):
+        return CTCData.FEATURES_DIMENSIONS[features][ndim]
+    
     @classmethod
     def from_arrays(cls, imgs: np.ndarray, masks: np.ndarray, train_args: dict):
         self = cls(**train_args)
+    # def from_ctc
         # for key, value in train_args.items():
         #     setattr(self, key, value)
 
@@ -335,9 +399,7 @@ class CTCData(Dataset):
         # self.img_folder = self._guess_img_folder(self.root)
         # logger.info(f"IMG:\t\t{self.img_folder}")
 
-        self.feat_dim, self.augmenter, self.cropper = self._setup_features_augs(
-            self.ndim, self.features, self.augment, self.crop_size
-        )
+        self.feat_dim, self.augmenter, self.cropper = self._setup_features_augs()
 
         start = default_timer()
 
@@ -380,45 +442,29 @@ class CTCData(Dataset):
         return n_divs
 
     def _setup_features_augs(
-        self, ndim: int, features: str, augment: int, crop_size: tuple[int]
+        self
     ):
         if self.features in ["wrfeat", "pretrained_feats"]:
-            return self._setup_features_augs_wrfeat(ndim, features, augment, crop_size)
+            return self._setup_features_augs_wrfeat()
 
         cropper = (
             RandomCrop(
-                crop_size=crop_size,
-                ndim=ndim,
+                crop_size=self.crop_size,
+                ndim=self.ndim,
                 use_padding=False,
                 ensure_inside_points=True,
             )
-            if crop_size is not None
+            if self.crop_size is not None
             else None
         )
 
         # Hack
         if self.features == "none":
-            return 0, default_augmenter, cropper
+            return default_augmenter, cropper
 
-        if ndim == 2:
-            augmenter = AugmentationPipeline(p=0.8, level=augment) if augment else None
-            feat_dim = {
-                "none": 0,
-                "regionprops": 7,
-                "regionprops2": 6,
-                "patch": 256,
-                "patch_regionprops": 256 + 5,
-                # "pretrained_feats": AVAILABLE_PRETRAINED_BACKBONES[self.pretrained_backbone_name]["feat_dim"],
-            }[features]
-        elif ndim == 3:
-            augmenter = AugmentationPipeline(p=0.8, level=augment) if augment else None
-            feat_dim = {
-                "none": 0,
-                "regionprops2": 11,
-                "patch_regionprops": 256 + 8,
-            }[features]
+        augmenter = AugmentationPipeline(p=0.8, level=self.augment_level) if self.augment_level else None
 
-        return feat_dim, augmenter, cropper
+        return augmenter, cropper
 
     def _compress_data(self):
         # compress masks and assoc_matrix
@@ -501,20 +547,6 @@ class CTCData(Dataset):
     def __len__(self):
         return len(self.windows)
     
-    def _get_wrfeat_feats_dims(self, ndim: int, features: str):
-        dims = {
-            "wrfeat": {
-                2: 7,
-                3: 12,
-            },
-        }
-        if features == "wrfeat":
-            return dims[features][ndim]
-        elif features == "pretrained_feats":
-            return self.pretrained_config.feat_dim
-        else:
-            raise ValueError(f"Unknown feature dimension for {features}. Consider updating this method.")
-
     def _load_gt(self):
         logger.info("Loading ground truth")
         self.start_frame = int(
@@ -706,8 +738,6 @@ class CTCData(Dataset):
                         for im, mask in zip(self.imgs, self.gt_masks)
                     ]
                 )
-
-        assert len(self.gt_masks) == len(self.imgs)
 
         # Load each of the detection folders and create data samples with a sliding window
         windows = []
@@ -1058,13 +1088,12 @@ class CTCData(Dataset):
     # -> updated _setup_features_augs_wrfeat to use a factory instead
 
     def _setup_features_augs_wrfeat(
-        self, ndim: int, features: str, augment: int, crop_size: tuple[int]
+        self
     ):
-        feat_dim = self._get_wrfeat_feats_dims(ndim, features)
-        augmenter = wrfeat.AugmentationFactory.create_augmentation_pipeline(augment)
-        cropper = wrfeat.AugmentationFactory.create_cropper(crop_size, ndim)
+        augmenter = wrfeat.AugmentationFactory.create_augmentation_pipeline(self.augment_level)
+        cropper = wrfeat.AugmentationFactory.create_cropper(self.crop_size, self.ndim) if self.crop_size is not None else None
 
-        return feat_dim, augmenter, cropper
+        return augmenter, cropper
 
     def _load_wrfeat(self):
         # Load ground truth
@@ -1092,6 +1121,8 @@ class CTCData(Dataset):
                         for im, mask in zip(self.imgs, self.gt_masks)
                     ]
                 )
+                if np.any(np.isnan(self.imgs)):
+                    raise ValueError("Compressed images contain NaN values")
 
         assert len(self.gt_masks) == len(self.imgs)
 
@@ -1141,13 +1172,24 @@ class CTCData(Dataset):
             # build features
             if self.features == "pretrained_feats":
                 self._setup_pretrained_feature_extractor()
-                self.feature_extractor.precompute_region_embeddings(self.imgs)
+                if np.all(self.imgs == 0):
+                    raise ValueError("Images are empty")
+                self.feature_extractor.precompute_region_embeddings(imgs)  # use NON_NORMALIZED images for pretrained features
+                # normalization is performed in the feature extractor
                 features = [
-                    wrfeat.WRPretrainedFeatures.from_loaded_pretrained_features(
-                        img=img[np.newaxis], mask=mask[np.newaxis], feature_extractor=self.feature_extractor, t_start=t
+                    wrfeat.WRPretrainedFeatures.from_pretrained_features(
+                        img=img[np.newaxis], 
+                        mask=mask[np.newaxis], 
+                        feature_extractor=self.feature_extractor, 
+                        t_start=t, 
+                        additional_properties=self.pretrained_config.additional_features
                     )
                     for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
                 ]
+                for wrf in features:
+                    if np.any(np.isnan(wrf.features_stacked)):
+                        raise ValueError("NaN in features")
+                    
             elif self.features == "wrfeat":
                 features = joblib.Parallel(n_jobs=8)(
                     joblib.delayed(wrfeat.WRFeatures.from_mask_img)(
@@ -1267,14 +1309,20 @@ class CTCData(Dataset):
 
         if self.augmenter is not None:
             feat = self.augmenter(feat)
-
+        
         coords0 = np.concatenate((feat.timepoints[:, None], feat.coords), axis=-1)
         coords0 = torch.from_numpy(coords0).float()
         assoc_matrix = torch.from_numpy(assoc_matrix.astype(np.float32))
-        features = torch.from_numpy(feat.features_stacked).float()
+        if self.pca_preprocessor is not None:
+            features = self.pca_preprocessor.transform(feat.features_stacked)
+        else:
+            features = feat.features_stacked
+        features = torch.from_numpy(features).float()
+        
+        
         labels = torch.from_numpy(feat.labels).long()
         timepoints = torch.from_numpy(feat.timepoints).long()
-
+    
         if self.max_tokens and len(timepoints) > self.max_tokens:
             time_incs = np.where(timepoints - np.roll(timepoints, 1))[0]
             n_elems = time_incs[np.searchsorted(time_incs, self.max_tokens) - 1]
@@ -1308,17 +1356,29 @@ class CTCData(Dataset):
 
             mask = torch.from_numpy(mask.astype(int)).long()
             res["mask"] = mask
-
+        
+        if torch.any(torch.isnan(features)):
+            raise ValueError("NaN in features")
+        elif torch.any(torch.all(features == 0, dim=-1)):
+            raise ValueError("Empty features")
+        
         return res
 
     def _setup_pretrained_feature_extractor(self):
         if self.ndim == 3:
             raise ValueError("Pretrained model feature extraction is not implemented for 3D data")
-        img_shape = self.imgs.shape[-2:]  # FIXME may not be consistent across all folders when training
+        img_shape = self.imgs.shape[-2:]  # initial guess, replaced later if shape changes
+        # get with first three folders
+        img_folder_name = "_".join(self.root.parts[-3:]) if len(self.root.parts) >= 3 else "_".join(self.root.parts)
+        img_folder_name = str(img_folder_name).replace(".", "").replace("/", "_").replace("\\", "_").replace(" ", "_")
+        from trackastra.data.pretrained_features import (
+            FeatureExtractor,
+        )
+        self.feature_extractor_save_path = self.pretrained_config.save_path / f"embeddings/{img_folder_name}"
         self.feature_extractor = FeatureExtractor.from_model_name(
             self.pretrained_config.model_name,
             img_shape, 
-            save_path=self.pretrained_config.save_path / "embeddings",
+            save_path=self.feature_extractor_save_path,
             mode=self.pretrained_config.mode,
             device=self.pretrained_config.device
         )
@@ -1583,6 +1643,8 @@ def collate_sequence_padding(batch):
         pad_mask[i, n_max_len - n_pad :] = True
 
     batch_new["padding_mask"] = pad_mask.bool()
+    if torch.all(pad_mask.bool()):
+        raise ValueError("No valid entries for padding mask!")
     return batch_new
 
 

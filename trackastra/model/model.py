@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Literal
 
 import torch
-import math
+
 # from torch_geometric.nn import GATv2Conv
 import yaml
 from torch import nn
@@ -288,6 +288,8 @@ class TrackingTransformer(torch.nn.Module):
             "none", "linear", "softmax", "quiet_softmax"
         ] = "quiet_softmax",
         attn_dist_mode: str = "v0",
+        extra_feature_layer: bool = False,
+        input_proj_dropout: float = 0,
     ):
         super().__init__()
 
@@ -313,10 +315,11 @@ class TrackingTransformer(torch.nn.Module):
         # self.window = window
         # self.feat_dim = feat_dim
         # self.coord_dim = coord_dim
-
+        
         self.proj = nn.Linear(
             (1 + coord_dim) * pos_embed_per_dim + feat_dim * feat_embed_per_dim, d_model
         )
+        
         self.norm = nn.LayerNorm(d_model)
 
         self.encoder = nn.ModuleList(
@@ -385,14 +388,17 @@ class TrackingTransformer(torch.nn.Module):
         coords = coords - min_time
 
         pos = self.pos_embed(coords)
-
-        if features is None or features.numel() == 0:
-            features = pos
-        else:
-            features = self.feat_embed(features)
-            features = torch.cat((pos, features), axis=-1)
-
-        features = self.proj(features)
+        
+        with torch.amp.autocast(enabled=False, device_type=features.device.type):
+            if features is None or features.numel() == 0:
+                features = pos
+            else:
+                features = self.feat_embed(features)
+                features = torch.cat((pos, features), axis=-1)
+        
+            features = self.proj(features)
+        # Clamp input when returning to mixed precision
+        features = features.clamp(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
         features = self.norm(features)
 
         x = features
@@ -411,7 +417,10 @@ class TrackingTransformer(torch.nn.Module):
         y = self.head_y(y)
 
         # outer product is the association matrix (logits)
-        A = torch.einsum("bnd,bmd->bnm", x, y)#/math.sqrt(_D)
+        A = torch.einsum("bnd,bmd->bnm", x, y)  # /math.sqrt(_D)
+        
+        if torch.any(torch.isnan(A)):
+            logger.error("NaN in A")
 
         return A
 
