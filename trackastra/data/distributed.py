@@ -269,11 +269,14 @@ class BalancedDataModule(LightningDataModule):
             start = default_timer()
             if self.dataset_kwargs.get("features") == "pretrained_feats_aug" and split == "val":
                 # do not computea augmented pretrained features for the val set
-                self.dataset_kwargs["features"] = "pretrained_feats"
+                split_features = "pretrained_feats"
+            else:
+                split_features = self.dataset_kwargs.get("features")
             ctc_datasets = [
                 CachedData(
                     root=Path(inp),
                     augment=self.augment if split == "train" else 0,
+                    features=split_features,
                     **self.dataset_kwargs,
                 )
                 for inp in inps
@@ -323,11 +326,14 @@ class BalancedDataModule(LightningDataModule):
             start = default_timer()
             if self.dataset_kwargs.get("features") == "pretrained_feats_aug" and split == "val":
                 # do not computea augmented pretrained features for the val set
-                self.dataset_kwargs["features"] = "pretrained_feats"
+                split_features = "pretrained_feats"
+            else:
+                split_features = self.dataset_kwargs.get("features")
             self.datasets[split] = torch.utils.data.ConcatDataset(
                 CachedData(
                     root=Path(inp),
                     augment=self.augment if split == "train" else 0,
+                    features=split_features,
                     **self.dataset_kwargs,
                 )
                 for inp in inps
