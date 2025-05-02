@@ -843,6 +843,8 @@ class FeatureExtractorAugWrapper:
         logger.info(f"Loading existing features from {self.save_path}...")
         with h5py.File(self.save_path, "r") as f:
             existing_augs = list(f.keys())
+            # remove all keys that are not integers
+            existing_augs = [aug for aug in existing_augs if aug.isdigit()]
             features_dict = self.load_all_features()
         logger.info("Done.")
         return True, existing_augs, features_dict
@@ -887,7 +889,7 @@ class FeatureExtractorAugWrapper:
         # check existing features
         present, existing_augs, existing_features_dict = self._check_existing()
         if present:
-            logger.info(f"Augmented features already exist at {self.save_path}.")
+            logger.debug(f"Saved features found at {self.save_path}.")
             if len(existing_augs) == self.n_aug + 1:
                 logger.info(f"All {self.n_aug} augmentations + original already exist. Loading existing features.")
                 self.all_aug_features = existing_features_dict
@@ -997,6 +999,8 @@ class FeatureExtractorAugWrapper:
         features = {}
         with h5py.File(path, "r") as f:
             for aug_id, group in f.items():
+                if not aug_id.isdigit():
+                    continue
                 aug_id = int(aug_id.split("_")[-1])
                 try:
                     applied_augs = json.loads(group.attrs["applied_augs"])
