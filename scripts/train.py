@@ -1105,6 +1105,13 @@ def train(args):
     else:
         profiler = None
 
+    import platform
+
+    from lightning.pytorch.strategies import DDPStrategy
+    
+    if platform.system() == "Windows":
+        strategy = DDPStrategy(process_group_backend="gloo")
+
     trainer = pl.Trainer(
         accelerator="auto",
         strategy=strategy,

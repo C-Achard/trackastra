@@ -1957,6 +1957,15 @@ def _assoc(A: np.ndarray, labels: np.ndarray, family: np.ndarray):
             A[i, j] = family[i, labels[j]]
 
 
+def determine_ctc_class(dataset_kwargs: dict):
+    if "features" not in dataset_kwargs:
+        raise ValueError("features must be set in dataset_kwargs")
+    if dataset_kwargs["features"] == "pretrained_feats_aug":
+        return CTCDataAugPretrainedFeats
+    else:
+        return CTCData
+        
+
 def _ctc_assoc_matrix(detections, ts, graph, matching):
     """Create the association matrix for a list of labels and a tracklet parent -> childrend graph.
 
