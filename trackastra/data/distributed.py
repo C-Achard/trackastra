@@ -20,7 +20,10 @@ from torch.utils.data import (
     DistributedSampler,
 )
 
-from trackastra.data.pretrained_features import PretrainedFeatureExtractorConfig, EmbeddingsPCACompression
+from trackastra.data.pretrained_features import (
+    EmbeddingsPCACompression,
+    PretrainedFeatureExtractorConfig,
+)
 
 from .data import CTCData, CTCDataAugPretrainedFeats
 
@@ -80,7 +83,6 @@ def cache_class(cachedir=None):
                     c.pretrained_config = c.pretrained_config.to_dict()
                     c.feature_extractor = None
                 if isinstance(c, CTCDataAugPretrainedFeats):
-                    c.feature_extractor = None
                     c.augmented_feature_extractor = None
                 logger.info(f"Saving cached dataset to {cache_file}")
                 pickle.dump(c, open(cache_file, "wb"))
@@ -262,6 +264,9 @@ class BalancedDataModule(LightningDataModule):
         ):
             logger.info(f"Loading {split.upper()} data")
             start = default_timer()
+            if self.dataset_kwargs.get("features") == "pretrained_feats_aug" and split == "val":
+                # do not computea augmented pretrained features for the val set
+                self.dataset_kwargs["features"] = "pretrained_feats"
             ctc_datasets = [
                 CTCData(
                     root=Path(inp),
@@ -298,11 +303,11 @@ class BalancedDataModule(LightningDataModule):
         self.datasets = dict()
         
         # if self.dataset_kwargs.get("pretrained_backbone_config") is not None:
-            # cfg = self.dataset_kwargs["pretrained_backbone_config"]
-            # if cfg.pca_preprocessor_path is not None:
-                # pca = EmbeddingsPCACompression.from_pretrained_cfg(cfg)
-                # pca.load_from_file(cfg.pca_preprocessor_path)
-                # self.dataset_kwargs["pca_preprocessor"] = pca
+        # cfg = self.dataset_kwargs["pretrained_backbone_config"]
+        # if cfg.pca_preprocessor_path is not None:
+        # pca = EmbeddingsPCACompression.from_pretrained_cfg(cfg)
+        # pca.load_from_file(cfg.pca_preprocessor_path)
+        # self.dataset_kwargs["pca_preprocessor"] = pca
         
         for split, inps in zip(
             ("train", "val"),

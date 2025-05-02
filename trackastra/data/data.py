@@ -6,6 +6,7 @@ from pathlib import Path
 from timeit import default_timer
 from typing import TYPE_CHECKING, ClassVar, Literal
 
+import h5py
 import joblib
 import lz4.frame
 import networkx as nx
@@ -515,9 +516,11 @@ class CTCData(Dataset):
         # compress masks and assoc_matrix
         logger.info("Compressing masks and assoc_matrix to save memory")
         for w in self.windows:
-            w["mask"] = _CompressedArray(w["mask"])
+            if "mask" in w:
+                w["mask"] = _CompressedArray(w["mask"])
             # dont compress full imgs (as needed for patch features)
-            w["img"] = _CompressedArray(w["img"])
+            if "img" in w:
+                w["img"] = _CompressedArray(w["img"])
             w["assoc_matrix"] = _CompressedArray(w["assoc_matrix"])
         self.gt_masks = _CompressedArray(self.gt_masks)
         self.det_masks = {k: _CompressedArray(v) for k, v in self.det_masks.items()}
@@ -1233,7 +1236,7 @@ class CTCData(Dataset):
                 self._setup_pretrained_feature_extractor()
                 if np.all(self.imgs == 0):
                     raise ValueError("Images are empty. Images must be provided when using pretrained features")
-                self.feature_extractor.precompute_region_embeddings(imgs)  # use NON_NORMALIZED images for pretrained features
+                self.feature_extractor.precompute_image_embeddings(imgs)  # use NON_NORMALIZED images for pretrained features
                 # normalization is performed in the feature extractor
                 features = [
                     wrfeat.WRPretrainedFeatures.from_pretrained_features(
@@ -1529,15 +1532,28 @@ class CTCDataAugPretrainedFeats(CTCData):
         
         self.pretrained_feats_augmenter = None
         self.augmented_feature_extractor = None
+        self.save_windows = True
         
+        self._aug_embeds_h5 = None
         self._last_selected = None
         self._rng = np.random.default_rng()
+        self._len = None
         self._debug = False
     
         super().__init__(*args, **kwargs)
         
+        logger.info("Loading finished, clearing feature extractors...")
+        
+        self.pretrained_feats_augmenter = None
+        self.augmented_feature_extractor = None
+        if self.save_windows:
+            self.windows = None
+        logger.info("Feature extractors cleared.")
+        
     def _init_features(self):
         self.windows = self._load()
+        if self.save_windows:
+            self._save_windows()
         
     def _get_ndim_and_nobj(self, start):
         if len(self.windows) > 0:
@@ -1651,6 +1667,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 images=imgs,
                 masks=det_masks,
             )
+            self._aug_embeds_h5 = self.augmented_feature_extractor.get_save_path()
         
             _w = self._build_windows(
                 det_masks,
@@ -1729,8 +1746,8 @@ class CTCDataAugPretrainedFeats(CTCData):
             w = dict(
                 coords=_coords,
                 t1=t1,
-                img=self.imgs[t1:t2],
-                mask=det_masks[t1:t2],
+                # img=self.imgs[t1:t2],
+                # mask=det_masks[t1:t2],
                 assoc_matrix=A,
                 labels=_labels,
                 timepoints=_ts,
@@ -1743,23 +1760,74 @@ class CTCDataAugPretrainedFeats(CTCData):
         logger.debug(f"Built {len(windows)} track windows.\n")
         return windows
     
+    def _save_windows(self):
+        if self._aug_embeds_h5 is not None:
+            self._len = len(self.windows)
+            
+            logger.info(f"Saving windows to {self._aug_embeds_h5}")
+            with h5py.File(self._aug_embeds_h5, "w") as f:
+                for i, w in enumerate(self.windows):
+                    grp = f.create_group(f"window_{i}")
+                    for aug_id in range(self.n_augs + 1):
+                        grp.create_dataset(f"feats_{aug_id}", data=w["features"][aug_id])
+                        grp.create_dataset(f"coords_{aug_id}", data=w["coords"][aug_id])
+                    grp.create_dataset("labels", data=w["labels"])
+                    grp.create_dataset("timepoints", data=w["timepoints"])
+                    grp.create_dataset("assoc_matrix", data=w["assoc_matrix"])
+                    # grp.create_dataset(f"img", data=w["img"])
+                    # grp.create_dataset(f"mask", data=w["mask"])
+                    grp.attrs["t1"] = w["t1"]
+        else:
+            raise ValueError("No augmented embeddings h5 file set. Cannot save windows.")
+
+    def _sample_from_file(self, window_id: int, aug_choice: int = 0):
+        with h5py.File(self._aug_embeds_h5, "r") as f:
+            grp = f[f"window_{window_id}"]
+            coords = grp[f"coords_{aug_choice}"][()]
+            features = grp[f"feats_{aug_choice}"][()]
+            labels = grp["labels"][()]
+            timepoints = grp["timepoints"][()]
+            assoc_matrix = grp["assoc_matrix"][()]
+            # img = grp["img"][()]
+            # mask = grp["mask"][()]
+            t1 = grp.attrs["t1"]
+            return coords, features, labels, timepoints, assoc_matrix, t1
+    
+    def __len__(self):
+        if self.save_windows and self.windows is None:
+            return self._len
+        else:
+            return len(self.windows)
+    
     def __getitem__(self, n: int, return_dense=None):
-        track = self.windows[n]
-        # 0 is original, 1 to n_augs are the augmented versions
-        random_aug_choice = self._rng.integers(0, self.n_augs + 1) 
-        coords = track["coords"][random_aug_choice]
-        features = track["features"][random_aug_choice]
+        if return_dense is None:
+            return_dense = self.return_dense
         
-        assoc_matrix = track["assoc_matrix"]
-        labels = track["labels"]
-        img = track["img"]
-        mask = track["mask"]
-        timepoints = track["timepoints"]
-        min_time = track["t1"]
+        random_aug_choice = self._rng.integers(0, self.n_augs + 1)
+         
+        if self.save_windows:
+            coords, features, labels, timepoints, assoc_matrix, min_time = self._sample_from_file(
+                    n, random_aug_choice
+                )
+        else:
+            track = self.windows[n]
+            # 0 is original, 1 to n_augs are the augmented versions
+            coords = track["coords"][random_aug_choice]
+            features = track["features"][random_aug_choice]
+            
+            assoc_matrix = track["assoc_matrix"]
+            labels = track["labels"]
+            # img = track["img"]
+            # mask = track["mask"]
+            timepoints = track["timepoints"]
+            min_time = track["t1"]
         
-        mask = CTCDataAugPretrainedFeats.decompress(mask)
-        img = CTCDataAugPretrainedFeats.decompress(img)
-        assoc_matrix = CTCDataAugPretrainedFeats.decompress(assoc_matrix)
+        # if return_dense and isinstance(mask, _CompressedArray):
+        #     mask = CTCDataAugPretrainedFeats.decompress(mask)
+        # if return_dense and isinstance(img, _CompressedArray):
+        #     img = CTCDataAugPretrainedFeats.decompress(img)
+        if isinstance(assoc_matrix, _CompressedArray):
+            assoc_matrix = CTCDataAugPretrainedFeats.decompress(assoc_matrix)
         
         coords = np.stack(coords, axis=0)
         features = np.stack(features, axis=0)
@@ -1803,13 +1871,13 @@ class CTCDataAugPretrainedFeats(CTCData):
             labels=labels,
         )
         
-        if return_dense:
-            if all([x is not None for x in img]):
-                img = torch.from_numpy(img).float()
-                res["img"] = img
+        # if return_dense:
+        #     if all([x is not None for x in img]):
+        #         img = torch.from_numpy(img).float()
+        #         res["img"] = img
 
-            mask = torch.from_numpy(mask.astype(int)).long()
-            res["mask"] = mask
+        #     mask = torch.from_numpy(mask.astype(int)).long()
+        #     res["mask"] = mask
         return res
         
 

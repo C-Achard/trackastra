@@ -828,15 +828,16 @@ class FeatureExtractorAugWrapper:
         
         self._debug_view = None
         
-    def _get_save_path(self):
+    def get_save_path(self):
         root_path = self.extractor.save_path / "aug"
         if not root_path.exists():
             root_path.mkdir(parents=True, exist_ok=True)
         self.save_path = root_path / f"{self.extractor.model_name_path}_aug.h5"
+        return self.save_path
         
     def _check_existing(self):
         """Checks if an h5 file already exists, and which augmentations are already saved."""
-        self._get_save_path()
+        self.get_save_path()
         if not self.save_path.exists() or self.force_recompute:
             return False, None, None
         logger.info(f"Loading existing features from {self.save_path}...")
@@ -977,7 +978,7 @@ class FeatureExtractorAugWrapper:
 
     def load_all_features(self) -> dict:
         """Loads all features from disk."""
-        self._get_save_path()
+        self.get_save_path()
         if not self.save_path.exists():
             raise FileNotFoundError(f"Path {self.save_path} does not exist.")
         
@@ -1003,6 +1004,8 @@ class FeatureExtractorAugWrapper:
                     applied_augs = None
                 data = {}
                 for t, t_group in group.items():
+                    if isinstance(t, str):
+                        continue
                     t = int(t.split("_")[-1])
                     data[t] = {}
                     for lab, lab_group in t_group.items():
