@@ -267,17 +267,16 @@ class BalancedDataModule(LightningDataModule):
         ):
             logger.info(f"Loading {split.upper()} data")
             start = default_timer()
+            local_kwargs = deepcopy(self.dataset_kwargs)
             if self.dataset_kwargs.get("features") == "pretrained_feats_aug" and split == "val":
                 # do not computea augmented pretrained features for the val set
-                split_features = "pretrained_feats"
-            else:
-                split_features = self.dataset_kwargs.get("features")
+                local_kwargs["features"] = "pretrained_feats"
+
             ctc_datasets = [
                 CachedData(
                     root=Path(inp),
                     augment=self.augment if split == "train" else 0,
-                    features=split_features,
-                    **self.dataset_kwargs,
+                    **local_kwargs,
                 )
                 for inp in inps
             ]
@@ -324,17 +323,15 @@ class BalancedDataModule(LightningDataModule):
         ):
             logger.info(f"Loading {split.upper()} data")
             start = default_timer()
+            local_kwargs = deepcopy(self.dataset_kwargs)
             if self.dataset_kwargs.get("features") == "pretrained_feats_aug" and split == "val":
                 # do not computea augmented pretrained features for the val set
-                split_features = "pretrained_feats"
-            else:
-                split_features = self.dataset_kwargs.get("features")
+                local_kwargs["features"] = "pretrained_feats"
             self.datasets[split] = torch.utils.data.ConcatDataset(
                 CachedData(
                     root=Path(inp),
                     augment=self.augment if split == "train" else 0,
-                    features=split_features,
-                    **self.dataset_kwargs,
+                    **local_kwargs,
                 )
                 for inp in inps
             )
