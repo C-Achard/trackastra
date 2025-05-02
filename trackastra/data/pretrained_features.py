@@ -257,7 +257,7 @@ class PretrainedAugmentations:
         images = torch.unsqueeze(images, dim=1)  # add channel dimension (T, C, H, W) for augmentation
         masks = torch.unsqueeze(masks, dim=1)  # add channel dimension (T, C, H, W) for augmentation
         
-        images, masks = self._aug(images, masks)
+        # images, masks = self._aug(images, masks)
         # NOTE : most models do require 3 channels, but this will be done in FeatureExtractor, so the output is squeezed
         return images.squeeze(), masks.squeeze(), self.gather_records()
     
