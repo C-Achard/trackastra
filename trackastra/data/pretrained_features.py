@@ -241,7 +241,7 @@ class PretrainedAugmentations:
         self.aug_list = [
             BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
             FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
-            RotAugment(degrees=15, rng_seed=rng_seed),
+            # RotAugment(degrees=15, rng_seed=rng_seed),
             # AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
             # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
         ]
