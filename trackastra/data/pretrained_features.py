@@ -3,7 +3,6 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
-from functools import partial
 from pathlib import Path
 from typing import Literal
 
@@ -203,6 +202,7 @@ class BrightnessJitter(BaseAugmentation):
         self.applied_record["contrast_jitter"] = contrast
         return transforms.ColorJitter(brightness=bright, contrast=contrast)
     
+
 class AddGaussianNoise(BaseAugmentation):
     def __init__(self, mean: float = 0.0, std: float = 0.1, rng_seed=None):
         super().__init__(p=None, rng_seed=rng_seed)
@@ -219,6 +219,7 @@ class AddGaussianNoise(BaseAugmentation):
         images = aug(images)
         return images, masks
     
+
 class RandomAffine(BaseAugmentation):
     def __init__(self, degrees: float = 0.0, translate: tuple[float, float] = (0.0, 0.0), scale: tuple[float, float] = (1.0, 1.0), rng_seed=None):
         super().__init__(p=None, rng_seed=rng_seed)
@@ -233,6 +234,7 @@ class RandomAffine(BaseAugmentation):
         aug = self._get_aug()
         images, masks = aug(images, masks)
         return images, masks
+
 
 class PretrainedAugmentations:
     """Augmentation pipeline to get augmented copies of model embeddings."""
@@ -842,7 +844,8 @@ class FeatureExtractorAugWrapper:
             self,
             extractor: FeatureExtractor,
             augmenter: PretrainedAugmentations, 
-            n_aug: int = 1
+            n_aug: int = 1,
+            force_recompute: bool = False,
         ):
         self.extractor = extractor
         self.n_aug = n_aug
@@ -855,7 +858,7 @@ class FeatureExtractorAugWrapper:
         # instead, we will save the augmented features + coordinates on a per-object basis in an HDF5 file
 
         self.save_path = None
-        self.force_recompute = True
+        self.force_recompute = force_recompute
         
         self._debug_view = None
         
@@ -870,12 +873,13 @@ class FeatureExtractorAugWrapper:
         """Checks if an h5 file already exists, and which augmentations are already saved."""
         self.get_save_path()
         if not self.save_path.exists() or self.force_recompute:
+            logger.debug(f"Augmentation file {self.save_path} does not exist or force_recompute is True. Recomputing features.")
             return False, None, None
         logger.info(f"Loading existing features from {self.save_path}...")
         with h5py.File(self.save_path, "r") as f:
             existing_augs = list(f.keys())
             # remove all keys that are not integers
-            existing_augs = [aug for aug in existing_augs if aug.isdigit()]
+            existing_augs = [aug for aug in existing_augs if "window" not in aug]
             features_dict = self.load_all_features()
         logger.info("Done.")
         return True, existing_augs, features_dict
@@ -927,10 +931,12 @@ class FeatureExtractorAugWrapper:
                 return self.all_aug_features
             else:
                 logger.info("No existing augmentations found.")
+        logger.debug(f"Existing augmentations: {existing_augs}")
         if existing_augs is None:
             existing_aug_ids = []
         else:
-            existing_aug_ids = [int(aug.split("_")[-1]) for aug in existing_augs]        
+            existing_aug_ids = [int(aug.split("_")[-1]) for aug in existing_augs]     
+        logger.debug(f"Existing augmentations IDs: {existing_aug_ids}")   
         
         if 0 not in existing_aug_ids:
             orig_feat_dict = self._compute_original(images, masks)
@@ -988,7 +994,7 @@ class FeatureExtractorAugWrapper:
 
         with h5py.File(self.save_path, "a") as f:
             # Check if the group already exists and delete it if necessary
-            group_name = f"augmentation_{aug_id}"
+            group_name = f"{aug_id}"
             if group_name in f:
                 del f[group_name]
             
@@ -1029,18 +1035,16 @@ class FeatureExtractorAugWrapper:
         
         features = {}
         with h5py.File(path, "r") as f:
+            logger.debug(f"Exisiting groups : {list(f.keys())}")
             for aug_id, group in f.items():
-                if not aug_id.isdigit():
+                if "window" in aug_id:
                     continue
-                aug_id = int(aug_id.split("_")[-1])
                 try:
                     applied_augs = json.loads(group.attrs["applied_augs"])
                 except KeyError:
                     applied_augs = None
                 data = {}
                 for t, t_group in group.items():
-                    if isinstance(t, str):
-                        continue
                     t = int(t.split("_")[-1])
                     data[t] = {}
                     for lab, lab_group in t_group.items():

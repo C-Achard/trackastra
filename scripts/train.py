@@ -892,7 +892,7 @@ def train(args):
             crop_size=args.crop_size,
             compress=args.compress,
             pretrained_backbone_config=pretrained_config,
-            n_augmentations=args.pretrained_n_augs,
+            pretrained_n_augmentations=args.pretrained_n_augs,
         )
         dummy_model = TrackingTransformer(
             coord_dim=dummy_data.ndim,
@@ -959,7 +959,7 @@ def train(args):
         crop_size=args.crop_size,
         compress=args.compress,
         pretrained_backbone_config=pretrained_config,
-        n_augmentations=args.pretrained_n_augs,
+        pretrained_n_augmentations=args.pretrained_n_augs,
     )
     sampler_kwargs = dict(
         batch_size=args.batch_size,

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from timeit import default_timer
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -1481,10 +1483,58 @@ class CTCData(Dataset):
             self._compute_pretrained_model_features()
 
 
+@dataclass
+class WRAugContainer:
+    """Container for the augmented features.
+    
+    Allows to use WRFeat augmentations without actually building WRFeat objects.
+    """
+
+    features: np.ndarray
+    coords: np.ndarray
+    timepoints: np.ndarray
+    labels: np.ndarray
+    
+    @classmethod
+    def build_from_window(cls, features, coords, timepoints, labels):
+        """Build a WRAugContainer from a window.
+        
+        Args:
+            features (np.ndarray): The features to use.
+            coords (np.ndarray): The coordinates to use.
+            timepoints (np.ndarray): The timepoints to use.
+            labels (np.ndarray): The labels to use.
+        """
+        coords = coords[:, 1:]
+        features = OrderedDict(
+            pretrained_feats=features,
+        )
+        return cls(
+            features=features,
+            coords=coords,
+            timepoints=timepoints,
+            labels=labels,
+        )
+    
+    def __len__(self):
+        return len(self.timepoints)
+    
+    @property
+    def ndim(self):
+        return self.coords.shape[-1]
+    
+    def get_data(self):
+        feats = self.features["pretrained_feats"]
+        coords = np.concatenate((self.timepoints[:, None], self.coords), axis=-1)
+        timepoints = self.timepoints
+        labels = self.labels
+        return feats, coords, timepoints, labels
+    
+
 class CTCDataAugPretrainedFeats(CTCData):
     """CTCData with pretrained features."""
 
-    def __init__(self, n_augmentations: int = 3, *args, **kwargs):
+    def __init__(self, pretrained_n_augmentations: int = 3, force_recompute=True, *args, **kwargs):
         """Args:
         root (str):
             Folder containing the CTC TRA folder.
@@ -1516,19 +1566,20 @@ class CTCDataAugPretrainedFeats(CTCData):
             Ignored otherwise.
         n_augmentations (int):
             How many augmented versions of the pretrained model embeddings to create.
+        force_recompute (bool):
+            If False, previously computed offline augmentations are loaded if available.
         # pca_preprocessor (EmbeddingsPCACompression):
         #     PCA preprocessor for the pretrained features.
         #     If mode is set to "pretrained_feats", this is used to reduce the dimensionality of the features.
         #     Ignored otherwise.
         """
         features = kwargs.get("features", None)
-        augment_level = kwargs.get("augment", 0)
         
         if features is not None and not features == "pretrained_feats_aug":
             raise ValueError("This class should only be used with pretrained_feats_aug features")
-        if augment_level > 0:
-            raise ValueError("Data augmentation should be specified using n_augmentations for this mode instead.")
-        self.n_augs = n_augmentations
+
+        self.n_augs = pretrained_n_augmentations
+        self.force_recompute = force_recompute
         
         self.pretrained_feats_augmenter = None
         self.augmented_feature_extractor = None
@@ -1547,6 +1598,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         self.pretrained_feats_augmenter = None
         self.augmented_feature_extractor = None
         if self.save_windows:
+            self._get_ndim_and_nobj(None, self.windows)
             self.windows = None
         logger.info("Feature extractors cleared.")
         
@@ -1554,10 +1606,25 @@ class CTCDataAugPretrainedFeats(CTCData):
         self.windows = self._load()
         if self.save_windows:
             self._save_windows()
+            
+    def _setup_features_augs(
+        self
+    ):
+        logger.debug(f"Creating augmentations with level {self.augment_level}")
+        augmenter = wrfeat.AugmentationFactory.create_augmentation_pipeline(self.augment_level, return_type=WRAugContainer)
+        cropper = wrfeat.AugmentationFactory.create_cropper(self.crop_size, self.ndim) if self.crop_size is not None else None
+
+        return augmenter, cropper
         
-    def _get_ndim_and_nobj(self, start):
+    def _get_ndim_and_nobj(self, start, windows=None):
+        if windows is not None:
+            self.ndim = windows[0]["coords"][0][0].shape[0] - 1
+            self.n_objects = tuple(len(t["coords"][0]) for t in windows)
+            return
+        if self.save_windows:
+            return
         if len(self.windows) > 0:
-            self.ndim = self.__getitem__(0)["coords"].shape[1] - 1
+            self.ndim = self.windows[0]["coords"][0].shape[1] - 1
             self.n_objects = tuple(len(t["coords"][0]) for t in self.windows)
             logger.info(
                 f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
@@ -1589,9 +1656,6 @@ class CTCDataAugPretrainedFeats(CTCData):
         if self.compress:
             self._compress_data() 
     
-    def _setup_features_augs(self):
-        return None, None
-    
     def _load(self):
         all_windows = []
         imgs = self._prepare_masks_and_imgs(return_orig_imgs=True)
@@ -1609,7 +1673,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 (
                     det_labels,
                     det_ts,
-                    _det_coords,
+                    _,
                 ) = self._masks2properties(det_masks)
                 
                 det_gt_matching = {
@@ -1629,7 +1693,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 (
                     det_labels,
                     det_ts,
-                    _det_coords,
+                    _,
                 ) = self._masks2properties(det_masks)
                 # FIXME matching can be slow for big images
                 # raise NotImplementedError("Matching not implemented for 3d version")
@@ -1660,6 +1724,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 extractor=self.feature_extractor,
                 augmenter=self.pretrained_feats_augmenter,
                 n_aug=self.n_augs,
+                force_recompute=self.force_recompute,
             )
             
             # Compute features for all augmentations
@@ -1667,6 +1732,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 images=imgs,
                 masks=det_masks,
             )
+            logger.debug(f"AUG DICT keys : {augmented_dict.keys()}")
             self._aug_embeds_h5 = self.augmented_feature_extractor.get_save_path()
         
             _w = self._build_windows(
@@ -1710,10 +1776,12 @@ class CTCDataAugPretrainedFeats(CTCData):
             for aug_id in range(n_entries):
                 for t in range(t1, t2):
                     labels_at_t = _labels[_ts == t]
+                    data = augmented_dict[str(aug_id)]["data"]
                     coords_at_t = [
-                        augmented_dict[aug_id]["data"][t][lab]["coords"]
+                        data[t][lab]["coords"]
                         for lab in labels_at_t
                     ]
+                    coords_at_t = np.stack(coords_at_t, axis=0)
                     _coords[aug_id].extend(coords_at_t)
             
                 if not len(_coords[aug_id]) == len(_labels):
@@ -1723,10 +1791,12 @@ class CTCDataAugPretrainedFeats(CTCData):
             for aug_id in range(n_entries):
                 for t in range(t1, t2):
                     labels_at_t = _labels[_ts == t]
+                    data = augmented_dict[str(aug_id)]["data"]
                     features_at_t = [
-                        augmented_dict[aug_id]["data"][t][lab]["features"]
+                        data[t][lab]["features"]
                         for lab in labels_at_t
                     ]
+                    features_at_t = np.stack(features_at_t, axis=0)
                     _features[aug_id].extend(features_at_t)
             
                 if not len(_features[aug_id]) == len(_labels):
@@ -1742,7 +1812,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                     self.gt_graph,
                     matching,
                 )
-
+                
             w = dict(
                 coords=_coords,
                 t1=t1,
@@ -1765,9 +1835,13 @@ class CTCDataAugPretrainedFeats(CTCData):
             self._len = len(self.windows)
             
             logger.info(f"Saving windows to {self._aug_embeds_h5}")
-            with h5py.File(self._aug_embeds_h5, "w") as f:
+            mode = "w" if self.force_recompute else "a"
+            with h5py.File(self._aug_embeds_h5, mode) as f:
                 for i, w in enumerate(self.windows):
-                    grp = f.create_group(f"window_{i}")
+                    group_name = f"window_{i}"
+                    if group_name in f:
+                        del f[group_name]
+                    grp = f.create_group(group_name)
                     for aug_id in range(self.n_augs + 1):
                         grp.create_dataset(f"feats_{aug_id}", data=w["features"][aug_id])
                         grp.create_dataset(f"coords_{aug_id}", data=w["coords"][aug_id])
@@ -1792,6 +1866,25 @@ class CTCDataAugPretrainedFeats(CTCData):
             # mask = grp["mask"][()]
             t1 = grp.attrs["t1"]
             return coords, features, labels, timepoints, assoc_matrix, t1
+    
+    def _augment_item(self, item: WRAugContainer):
+        if self.cropper is not None:
+            # Use only if there is at least one timepoint per detection
+            cropped_feat, cropped_idx = self.cropper(item)
+            cropped_timepoints = item.timepoints[cropped_idx]
+            if len(np.unique(cropped_timepoints)) == self.window_size:
+                idx = cropped_idx
+                item.features = cropped_feat
+                item.labels = item.labels[idx]
+                item.timepoints = item.timepoints[idx]
+                item.assoc_matrix = item.assoc_matrix[idx][:, idx]
+            else:
+                logger.debug("Skipping cropping")
+        
+        if self.augmenter is not None:
+            item = self.augmenter(item)
+            
+        return item
     
     def __len__(self):
         if self.save_windows and self.windows is None:
@@ -1832,6 +1925,16 @@ class CTCDataAugPretrainedFeats(CTCData):
         coords = np.stack(coords, axis=0)
         features = np.stack(features, axis=0)
 
+        if self.augment_level > 0:
+            augment_container = WRAugContainer.build_from_window(
+                features=features,
+                coords=coords,
+                timepoints=timepoints,
+                labels=labels,
+            )
+            augmented_data = self._augment_item(augment_container)
+            features, coords, timepoints, labels = augmented_data.get_data()
+            
         shapes = [
             len(labels),
             len(timepoints),
@@ -1840,6 +1943,9 @@ class CTCDataAugPretrainedFeats(CTCData):
         ]
         if len(np.unique(shapes)) != 1:
             raise ValueError(f"Shape mismatch: {shapes} (labs/timepoints/coords/features)")
+        
+        if coords.shape[-1] != self.ndim + 1:
+            raise ValueError(f"Coords shape mismatch: {coords.shape[-1]} != {self.ndim + 1}")
         
         # coords is already including time, simply remove min_time along the first axis
         coords[:, 0] -= min_time
@@ -1856,15 +1962,21 @@ class CTCDataAugPretrainedFeats(CTCData):
                 f"Clipped window of size {timepoints[n_elems - 1] - timepoints.min()}"
             )
             
-        coords = torch.from_numpy(coords).float()
+        coords0 = torch.from_numpy(coords).float()
         features = torch.from_numpy(features).float() if isinstance(features, np.ndarray) else features.float()
         assoc_matrix = torch.from_numpy(assoc_matrix.copy()).float()
         labels = torch.from_numpy(labels).long()
         timepoints = torch.from_numpy(timepoints).long()
         
+        if self.augmenter is not None:
+            coords = coords0.clone()
+            coords[:, 1:] += torch.randint(0, 512, (1, self.ndim))
+        else:
+            coords = coords0.clone()
+        
         res = dict(
             features=features,
-            coords0=coords.clone(),
+            coords0=coords0,
             coords=coords,
             assoc_matrix=assoc_matrix,
             timepoints=timepoints,
