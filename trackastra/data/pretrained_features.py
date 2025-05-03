@@ -994,7 +994,7 @@ class FeatureExtractorAugWrapper:
 
         with h5py.File(self.save_path, "a") as f:
             # Check if the group already exists and delete it if necessary
-            group_name = aug_id
+            group_name = str(aug_id)
             if group_name in f:
                 del f[group_name]
             
