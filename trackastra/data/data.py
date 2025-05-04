@@ -1494,9 +1494,10 @@ class WRAugContainer:
     coords: np.ndarray
     timepoints: np.ndarray
     labels: np.ndarray
+    assoc_matrix: np.ndarray
     
     @classmethod
-    def build_from_window(cls, features, coords, timepoints, labels):
+    def build_from_window(cls, features, coords, timepoints, labels, assoc_matrix):
         """Build a WRAugContainer from a window.
         
         Args:
@@ -1504,6 +1505,7 @@ class WRAugContainer:
             coords (np.ndarray): The coordinates to use.
             timepoints (np.ndarray): The timepoints to use.
             labels (np.ndarray): The labels to use.
+            assoc_matrix (np.ndarray): The association matrix to use.
         """
         coords = coords[:, 1:]
         features = OrderedDict(
@@ -1514,6 +1516,7 @@ class WRAugContainer:
             coords=coords,
             timepoints=timepoints,
             labels=labels,
+            assoc_matrix=assoc_matrix,
         )
     
     def __len__(self):
@@ -1528,7 +1531,8 @@ class WRAugContainer:
         coords = np.concatenate((self.timepoints[:, None], self.coords), axis=-1)
         timepoints = self.timepoints
         labels = self.labels
-        return feats, coords, timepoints, labels
+        A = self.assoc_matrix
+        return feats, coords, timepoints, labels, A
     
 
 class CTCDataAugPretrainedFeats(CTCData):
@@ -1941,9 +1945,10 @@ class CTCDataAugPretrainedFeats(CTCData):
                 coords=coords,
                 timepoints=timepoints,
                 labels=labels,
+                assoc_matrix=assoc_matrix,
             )
             augmented_data = self._augment_item(augment_container)
-            features, coords, timepoints, labels = augmented_data.get_data()
+            features, coords, timepoints, labels, assoc_matrix = augmented_data.get_data()
             
         shapes = [
             len(labels),
