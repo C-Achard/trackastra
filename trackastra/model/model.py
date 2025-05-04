@@ -317,7 +317,8 @@ class TrackingTransformer(torch.nn.Module):
         # self.coord_dim = coord_dim
         
         self.proj = nn.Linear(
-            (1 + coord_dim) * pos_embed_per_dim + feat_dim * feat_embed_per_dim, d_model
+            # (1 + coord_dim) * pos_embed_per_dim + 
+            feat_dim * feat_embed_per_dim, d_model
         )
         
         self.norm = nn.LayerNorm(d_model)
