@@ -1616,7 +1616,7 @@ class CTCDataAugPretrainedFeats(CTCData):
     ):
         logger.debug(f"Creating augmentations with level {self.augment_level}")
         augmenter = wrfeat.AugmentationFactory.create_augmentation_pipeline(self.augment_level, return_type=WRAugContainer)
-        cropper = wrfeat.AugmentationFactory.create_cropper(self.crop_size, self.ndim) if self.crop_size is not None else None
+        cropper = wrfeat.AugmentationFactory.create_cropper(self.crop_size, self.ndim, return_type=WRAugContainer) if self.crop_size is not None else None
 
         return augmenter, cropper
         
@@ -1945,6 +1945,8 @@ class CTCDataAugPretrainedFeats(CTCData):
                 labels=labels,
             )
             augmented_data, assoc_matrix = self._augment_item(augment_container, labels, timepoints, assoc_matrix)
+            if not isinstance(augmented_data, WRAugContainer):
+                raise ValueError("Augmented data is not a WRAugContainer. Check that augmenter return type is correct.")
             features, coords, timepoints, labels = augmented_data.get_data()
             
         shapes = [
