@@ -1884,11 +1884,11 @@ class CTCDataAugPretrainedFeats(CTCData):
     def _augment_item(self, item: WRAugContainer):
         if self.cropper is not None:
             # Use only if there is at least one timepoint per detection
-            cropped_feat, cropped_idx = self.cropper(item)
+            _cropped_feat, cropped_idx = self.cropper(item)
             cropped_timepoints = item.timepoints[cropped_idx]
             if len(np.unique(cropped_timepoints)) == self.window_size:
                 idx = cropped_idx
-                item.features = cropped_feat
+                item.features = item.features[idx]
                 item.labels = item.labels[idx]
                 item.timepoints = item.timepoints[idx]
                 item.assoc_matrix = item.assoc_matrix[idx][:, idx]
