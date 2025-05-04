@@ -394,7 +394,7 @@ class TrackingTransformer(torch.nn.Module):
                 features = pos
             else:
                 features = self.feat_embed(features)
-                features = torch.cat((pos, features), axis=-1)
+                # features = torch.cat((pos, features), axis=-1)
         
             features = self.proj(features)
         # Clamp input when returning to mixed precision
