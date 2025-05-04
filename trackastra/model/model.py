@@ -368,10 +368,10 @@ class TrackingTransformer(torch.nn.Module):
         else:
             self.feat_embed = nn.Identity()
 
-        self.pos_embed = PositionalEncoding(
-            cutoffs=(window,) + (spatial_pos_cutoff,) * coord_dim,
-            n_pos=(pos_embed_per_dim,) * (1 + coord_dim),
-        )
+        # self.pos_embed = PositionalEncoding(
+        #     cutoffs=(window,) + (spatial_pos_cutoff,) * coord_dim,
+        #     n_pos=(pos_embed_per_dim,) * (1 + coord_dim),
+        # )
 
         # self.pos_embed = NoPositionalEncoding(d=pos_embed_per_dim * (1 + coord_dim))
 
@@ -388,11 +388,12 @@ class TrackingTransformer(torch.nn.Module):
         min_time = coords[:, :, :1].min(dim=1, keepdims=True).values
         coords = coords - min_time
 
-        pos = self.pos_embed(coords)
+        # pos = self.pos_embed(coords)
         
         with torch.amp.autocast(enabled=False, device_type=features.device.type):
             if features is None or features.numel() == 0:
-                features = pos
+                # features = pos
+                pass
             else:
                 features = self.feat_embed(features)
                 # features = torch.cat((pos, features), axis=-1)
