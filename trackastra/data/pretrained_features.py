@@ -938,35 +938,35 @@ class FeatureExtractorAugWrapper:
             existing_aug_ids = [int(aug.split("_")[-1]) for aug in existing_augs]     
         logger.debug(f"Existing augmentations IDs: {existing_aug_ids}")   
         
-        if 0 not in existing_aug_ids:
+        if "0" not in existing_aug_ids:
             orig_feat_dict = self._compute_original(images, masks)
         else:
             logger.info("Original features already exist. Skipping computation for original features.")
-            orig_feat_dict = existing_features_dict[0]["data"]
+            orig_feat_dict = existing_features_dict["0"]["data"]
             
         self.all_aug_features = {
-            0: {
+            "0": {
                 "data": orig_feat_dict,
             }
         }
-        if 0 not in existing_aug_ids:
-            self._save_features(0, self.all_aug_features[0])
+        if "0" not in existing_aug_ids:
+            self._save_features(0, self.all_aug_features["0"])
         
         self.aug_pipeline.normalize = False  # do not re-normalize the images
         for n in range(self.n_aug):
             if n + 1 in existing_aug_ids:
                 logger.info(f"Augmentation {n + 1} already exists. Skipping computation.")
-                aug_feat_dict = existing_features_dict[n + 1]["data"]
-                aug_record = existing_features_dict[n + 1]["applied_augs"]
+                aug_feat_dict = existing_features_dict[str(n + 1)]["data"]
+                aug_record = existing_features_dict[str(n + 1)]["applied_augs"]
             else:
                 aug_feat_dict, aug_record = self._compute_augmented(images, masks)
             
-            self.all_aug_features[n + 1] = {
+            self.all_aug_features[str(n + 1)] = {
                 "applied_augs": aug_record,
                 "data": aug_feat_dict,
             }
-            if n + 1 not in existing_aug_ids:
-                self._save_features(n + 1, self.all_aug_features[n + 1])
+            if str(n + 1) not in existing_aug_ids:
+                self._save_features(n + 1, self.all_aug_features[str(n + 1)])
 
         return self.all_aug_features
 
