@@ -1601,7 +1601,11 @@ class CTCDataAugPretrainedFeats(CTCData):
             self._get_ndim_and_nobj(None, self.windows)
             self.windows = None
         logger.info("Feature extractors cleared.")
-        
+    
+    @property
+    def feat_dim(self):
+        return self.pretrained_config.feat_dim
+    
     def _init_features(self):
         self.windows = self._load()
         if self.save_windows:
@@ -1781,7 +1785,10 @@ class CTCDataAugPretrainedFeats(CTCData):
                         data[t][lab]["coords"]
                         for lab in labels_at_t
                     ]
-                    coords_at_t = np.stack(coords_at_t, axis=0)
+                    if len(coords_at_t) == 0:  # handle empty frames
+                        coords_at_t = np.zeros((0, self.ndim + 1), dtype=int) 
+                    else:
+                        coords_at_t = np.stack(coords_at_t, axis=0)
                     _coords[aug_id].extend(coords_at_t)
             
                 if not len(_coords[aug_id]) == len(_labels):
@@ -1796,7 +1803,10 @@ class CTCDataAugPretrainedFeats(CTCData):
                         data[t][lab]["features"]
                         for lab in labels_at_t
                     ]
-                    features_at_t = np.stack(features_at_t, axis=0)
+                    if len(features_at_t) == 0:
+                        features_at_t = np.zeros((0, self.feat_dim), dtype=np.float32)
+                    else:
+                        features_at_t = np.stack(features_at_t, axis=0)
                     _features[aug_id].extend(features_at_t)
             
                 if not len(_features[aug_id]) == len(_labels):
