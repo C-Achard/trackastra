@@ -1881,17 +1881,18 @@ class CTCDataAugPretrainedFeats(CTCData):
             t1 = grp.attrs["t1"]
             return coords, features, labels, timepoints, assoc_matrix, t1
     
-    def _augment_item(self, item: WRAugContainer):
+    def _augment_item(self, item: WRAugContainer, labels, timepoints, assoc_matrix):
+        """Apply augmentations to the features."""
         if self.cropper is not None:
             # Use only if there is at least one timepoint per detection
-            _cropped_feat, cropped_idx = self.cropper(item)
+            cropped_item, cropped_idx = self.cropper(item)
             cropped_timepoints = item.timepoints[cropped_idx]
             if len(np.unique(cropped_timepoints)) == self.window_size:
                 idx = cropped_idx
-                item.features = item.features[idx]
-                item.labels = item.labels[idx]
-                item.timepoints = item.timepoints[idx]
-                item.assoc_matrix = item.assoc_matrix[idx][:, idx]
+                item = cropped_item
+                labels = labels[idx]
+                timepoints = timepoints[idx]
+                assoc_matrix = assoc_matrix[idx][:, idx]
             else:
                 logger.debug("Skipping cropping")
         
@@ -1947,7 +1948,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 labels=labels,
                 assoc_matrix=assoc_matrix,
             )
-            augmented_data = self._augment_item(augment_container)
+            augmented_data = self._augment_item(augment_container, labels, timepoints, assoc_matrix)
             features, coords, timepoints, labels, assoc_matrix = augmented_data.get_data()
             
         shapes = [
