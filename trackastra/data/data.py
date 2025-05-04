@@ -1485,6 +1485,8 @@ class CTCData(Dataset):
 
 @dataclass
 class WRAugContainer:
+    # FIXME might be better to create a subclass "fixture" from WRFeat 
+    # so that the return type does not have to be changed for every augmentation
     """Container for the augmented features.
     
     Allows to use WRFeat augmentations without actually building WRFeat objects.
