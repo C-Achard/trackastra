@@ -1494,7 +1494,7 @@ class WRAugContainer:
     coords: np.ndarray
     timepoints: np.ndarray
     labels: np.ndarray
-    assoc_matrix: np.ndarray
+    assoc_matrix: np.ndarray | None = None
     
     @classmethod
     def build_from_window(cls, features, coords, timepoints, labels, assoc_matrix):
