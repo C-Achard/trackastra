@@ -183,15 +183,15 @@ class Rot90Augment(BaseAugmentation):
     def __call__(self, images, masks):
         if self._rng.rand() > self._p:
             return images, masks
-        aug = self._get_aug()
-        images, masks = aug(images, masks)
+        angle = self._get_aug()
+        images = transforms.functional.rotate(images, angle, expand=True)
+        masks = transforms.functional.rotate(masks, angle, expand=True)
         return images, masks
     
     def _get_aug(self):
         angle = self._rng.choice([90, 180, 270])
-        t = transforms.RandomRotation(degrees=[angle, angle], expand=True)
-        self.applied_record["rot90"] = angle
-        return t
+        self.applied_record["rot90"] = int(angle)
+        return angle
 
 
 class BrightnessJitter(BaseAugmentation):
@@ -967,7 +967,7 @@ class FeatureExtractorAugWrapper:
         if existing_augs is None:
             existing_aug_ids = []
         else:
-            existing_aug_ids = [int(aug.split("_")[-1]) for aug in existing_augs]     
+            existing_aug_ids = existing_augs   
         logger.debug(f"Existing augmentations IDs: {existing_aug_ids}")   
         
         if "0" not in existing_aug_ids:
@@ -986,7 +986,7 @@ class FeatureExtractorAugWrapper:
         
         self.aug_pipeline.normalize = False  # do not re-normalize the images
         for n in range(self.n_aug):
-            if n + 1 in existing_aug_ids:
+            if str(f"{n + 1}") in existing_aug_ids:
                 logger.info(f"Augmentation {n + 1} already exists. Skipping computation.")
                 aug_feat_dict = existing_features_dict[str(n + 1)]["data"]
                 aug_record = existing_features_dict[str(n + 1)]["applied_augs"]
