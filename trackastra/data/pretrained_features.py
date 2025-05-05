@@ -170,9 +170,9 @@ class RotAugment(BaseAugmentation):
         self.degrees = degrees
     
     def __call__(self, images, masks):
-        aug = self._get_aug()
         if self._rng.rand() > self._p:
             return images, masks
+        aug = self._get_aug()
         images, masks = aug(images, masks)
         return images, masks
     
@@ -180,7 +180,26 @@ class RotAugment(BaseAugmentation):
         t = transforms.RandomRotation(degrees=self.degrees)
         self.applied_record["rotation"] = self.degrees
         return t
+
+
+class Rot90Augment(BaseAugmentation):
     
+    def __init__(self, p=0.5, rng_seed=None):
+        super().__init__(p, rng_seed=rng_seed)
+        
+    def __call__(self, images, masks):
+        if self._rng.rand() > self._p:
+            return images, masks
+        aug = self._get_aug()
+        images, masks = aug(images, masks)
+        return images, masks
+    
+    def _get_aug(self):
+        angle = self._rng.choice([90, 180, 270])
+        t = transforms.RandomRotation(degrees=[angle, angle], expand=True)
+        self.applied_record["rot90"] = angle
+        return t
+
 
 class BrightnessJitter(BaseAugmentation):
     
@@ -210,12 +229,13 @@ class AddGaussianNoise(BaseAugmentation):
         self.std = std
 
     def _get_aug(self):
+        self.applied_record["gaussian_noise"] = (self.mean, self.std)
         return transforms.Lambda(lambda x: x + torch.randn_like(x) * self.std + self.mean)
 
     def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
-        aug = self._get_aug()
         if self._rng.rand() > self._p:
             return images, masks
+        aug = self._get_aug()
         images = aug(images)
         return images, masks
     
@@ -234,6 +254,22 @@ class RandomAffine(BaseAugmentation):
         aug = self._get_aug()
         images, masks = aug(images, masks)
         return images, masks
+    
+
+class ElasticTransform(BaseAugmentation):
+    def __init__(self, alpha: float = 10.0, sigma: float = 0.5, rng_seed=None):
+        super().__init__(p=None, rng_seed=rng_seed)
+        self.alpha = alpha
+        self.sigma = sigma
+
+    def _get_aug(self):
+        self.applied_record["elastic_transform"] = (self.alpha, self.sigma)
+        return transforms.ElasticTransform(alpha=self.alpha, sigma=self.sigma)
+
+    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
+        aug = self._get_aug()
+        images, masks = aug(images, masks)
+        return images, masks
 
 
 class PretrainedAugmentations:
@@ -241,25 +277,30 @@ class PretrainedAugmentations:
     def __init__(self, rng_seed=None, normalize=True):
         self.aug_record = {}
         self.aug_list = [
+            ElasticTransform(alpha=10.0, sigma=0.5, rng_seed=rng_seed),
             BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
             FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
             # RotAugment(degrees=15, rng_seed=rng_seed),
-            # AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
+            Rot90Augment(p=0.5, rng_seed=rng_seed),
+            AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
             # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
         ]
-        self._aug = transforms.Compose(
-            self.aug_list
-        )
+        self._aug = None
+        self._rng = np.random.RandomState(rng_seed)
         self.normalize = normalize
 
     def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask, normalize=True) -> tuple[torch.Tensor, tv_tensors.Mask, dict]:
         """Applies the augmentations to the images."""
         images, masks = self.preprocess(images, masks, normalize=normalize)
         
+        augs = self._rng.shuffle(self.aug_list)
+        
+        self._aug = transforms.Compose(augs)
+        
         images = torch.unsqueeze(images, dim=1)  # add channel dimension (T, C, H, W) for augmentation
         masks = torch.unsqueeze(masks, dim=1)  # add channel dimension (T, C, H, W) for augmentation
         
-        # images, masks = self._aug(images, masks)
+        images, masks = self._aug(images, masks)
         # NOTE : most models do require 3 channels, but this will be done in FeatureExtractor, so the output is squeezed
         return images.squeeze(), masks.squeeze(), self.gather_records()
     

@@ -288,8 +288,6 @@ class TrackingTransformer(torch.nn.Module):
             "none", "linear", "softmax", "quiet_softmax"
         ] = "quiet_softmax",
         attn_dist_mode: str = "v0",
-        extra_feature_layer: bool = False,
-        input_proj_dropout: float = 0,
     ):
         super().__init__()
 
