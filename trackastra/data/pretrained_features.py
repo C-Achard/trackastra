@@ -128,8 +128,8 @@ class BaseAugmentation(ABC):
         self.applied_record = {}
 
     def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
-        aug = self._get_aug()
         if self._p is None or self._rng.rand() < self._p:
+            aug = self._get_aug()
             return aug(images, masks)
         return images, masks
     
@@ -229,12 +229,13 @@ class AddGaussianNoise(BaseAugmentation):
         self.std = std
 
     def _get_aug(self):
-        self.applied_record["gaussian_noise"] = (self.mean, self.std)
-        return transforms.Lambda(lambda x: x + torch.randn_like(x) * self.std + self.mean)
+        # sample random mean/std
+        mean = self._rng.uniform(-self.mean, self.mean) if self.mean is not None else None
+        std = self._rng.uniform(0, self.std) if self.std is not None else None
+        self.applied_record["gaussian_noise"] = (mean, std)
+        return transforms.Lambda(lambda x: x + torch.randn_like(x) * std + mean)
 
     def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
-        if self._rng.rand() > self._p:
-            return images, masks
         aug = self._get_aug()
         images = aug(images)
         return images, masks
@@ -257,19 +258,16 @@ class RandomAffine(BaseAugmentation):
     
 
 class ElasticTransform(BaseAugmentation):
-    def __init__(self, alpha: float = 10.0, sigma: float = 0.5, rng_seed=None):
-        super().__init__(p=None, rng_seed=rng_seed)
+    def __init__(self, p=0.5, alpha: float = 10.0, sigma: float = 0.5, rng_seed=None):
+        super().__init__(p=p, rng_seed=rng_seed)
         self.alpha = alpha
         self.sigma = sigma
 
     def _get_aug(self):
-        self.applied_record["elastic_transform"] = (self.alpha, self.sigma)
-        return transforms.ElasticTransform(alpha=self.alpha, sigma=self.sigma)
-
-    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
-        aug = self._get_aug()
-        images, masks = aug(images, masks)
-        return images, masks
+        alpha = self._rng.uniform(0, self.alpha)
+        sigma = self._rng.uniform(0, self.sigma) 
+        self.applied_record["elastic_transform"] = (alpha, sigma)
+        return transforms.ElasticTransform(alpha=alpha, sigma=sigma)
 
 
 class PretrainedAugmentations:
@@ -277,12 +275,12 @@ class PretrainedAugmentations:
     def __init__(self, rng_seed=None, normalize=True):
         self.aug_record = {}
         self.aug_list = [
-            ElasticTransform(alpha=10.0, sigma=0.5, rng_seed=rng_seed),
             BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
             FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
-            # RotAugment(degrees=15, rng_seed=rng_seed),
+            RotAugment(degrees=10, rng_seed=rng_seed),
             Rot90Augment(p=0.5, rng_seed=rng_seed),
             AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
+            ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),
             # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
         ]
         self._aug = None
@@ -293,9 +291,9 @@ class PretrainedAugmentations:
         """Applies the augmentations to the images."""
         images, masks = self.preprocess(images, masks, normalize=normalize)
         
-        augs = self._rng.shuffle(self.aug_list)
+        self._rng.shuffle(self.aug_list)
         
-        self._aug = transforms.Compose(augs)
+        self._aug = transforms.Compose(self.aug_list)
         
         images = torch.unsqueeze(images, dim=1)  # add channel dimension (T, C, H, W) for augmentation
         masks = torch.unsqueeze(masks, dim=1)  # add channel dimension (T, C, H, W) for augmentation
