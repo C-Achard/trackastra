@@ -169,16 +169,9 @@ class RotAugment(BaseAugmentation):
         super().__init__(p, rng_seed=rng_seed)
         self.degrees = degrees
     
-    def __call__(self, images, masks):
-        if self._rng.rand() > self._p:
-            return images, masks
-        aug = self._get_aug()
-        images, masks = aug(images, masks)
-        return images, masks
-    
     def _get_aug(self):
-        t = transforms.RandomRotation(degrees=self.degrees)
         self.applied_record["rotation"] = self.degrees
+        t = transforms.RandomRotation(degrees=self.degrees)
         return t
 
 

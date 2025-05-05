@@ -313,11 +313,17 @@ class TrackingTransformer(torch.nn.Module):
         # self.window = window
         # self.feat_dim = feat_dim
         # self.coord_dim = coord_dim
+        self._use_coords = True
         
-        self.proj = nn.Linear(
-            # (1 + coord_dim) * pos_embed_per_dim + 
-            feat_dim * feat_embed_per_dim, d_model
-        )
+        if self._use_coords:
+            self.proj = nn.Linear(
+                (1 + coord_dim) * pos_embed_per_dim + 
+                feat_dim * feat_embed_per_dim, d_model
+            )
+        else:
+            self.proj = nn.Linear(
+                feat_dim * feat_embed_per_dim, d_model
+            )
         
         self.norm = nn.LayerNorm(d_model)
 
@@ -366,10 +372,13 @@ class TrackingTransformer(torch.nn.Module):
         else:
             self.feat_embed = nn.Identity()
 
-        # self.pos_embed = PositionalEncoding(
-        #     cutoffs=(window,) + (spatial_pos_cutoff,) * coord_dim,
-        #     n_pos=(pos_embed_per_dim,) * (1 + coord_dim),
-        # )
+        if self._use_coords:
+            self.pos_embed = PositionalEncoding(
+                cutoffs=(window,) + (spatial_pos_cutoff,) * coord_dim,
+                n_pos=(pos_embed_per_dim,) * (1 + coord_dim),
+            )
+        else:
+            self.pos_embed = nn.Identity()
 
         # self.pos_embed = NoPositionalEncoding(d=pos_embed_per_dim * (1 + coord_dim))
 
@@ -386,15 +395,15 @@ class TrackingTransformer(torch.nn.Module):
         min_time = coords[:, :, :1].min(dim=1, keepdims=True).values
         coords = coords - min_time
 
-        # pos = self.pos_embed(coords)
+        pos = self.pos_embed(coords)
         
         with torch.amp.autocast(enabled=False, device_type=features.device.type):
             if features is None or features.numel() == 0:
-                # features = pos
-                pass
+                features = pos
             else:
                 features = self.feat_embed(features)
-                # features = torch.cat((pos, features), axis=-1)
+                if self._use_coords:
+                    features = torch.cat((pos, features), axis=-1)
         
             features = self.proj(features)
         # Clamp input when returning to mixed precision
