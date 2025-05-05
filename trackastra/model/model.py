@@ -288,6 +288,7 @@ class TrackingTransformer(torch.nn.Module):
             "none", "linear", "softmax", "quiet_softmax"
         ] = "quiet_softmax",
         attn_dist_mode: str = "v0",
+        use_coords: bool = True,
     ):
         super().__init__()
 
@@ -307,13 +308,14 @@ class TrackingTransformer(torch.nn.Module):
             feat_embed_per_dim=feat_embed_per_dim,
             causal_norm=causal_norm,
             attn_dist_mode=attn_dist_mode,
+            use_coords=use_coords,
         )
 
         # TODO remove, alredy present in self.config
         # self.window = window
         # self.feat_dim = feat_dim
         # self.coord_dim = coord_dim
-        self._use_coords = True
+        self._use_coords = use_coords
         
         if self._use_coords:
             self.proj = nn.Linear(

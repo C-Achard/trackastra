@@ -909,6 +909,7 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
+            use_coords=args.use_coords,
         )
 
         dummy_model_lightning = WrappedLightningModule(
@@ -1050,6 +1051,7 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
+            use_coords=args.use_coords,
         )
 
     model_lightning = WrappedLightningModule(
@@ -1348,6 +1350,12 @@ def parse_train_args():
         type=int,
         default=None,
         help="Number of augmentations to use for pretrained features. Only valid if features is pretrained_feats_aug",
+    )
+    parser.add_argument(
+        "--use_coords",
+        type=str2bool,
+        default=True,
+        help="Use coordinates as input features. --features cannot be none if True.",
     )
 
     args, unknown_args = parser.parse_known_args()
