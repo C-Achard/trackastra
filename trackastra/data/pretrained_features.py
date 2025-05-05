@@ -25,8 +25,7 @@ from transformers import (
     SamProcessor,
 )
 
-from trackastra.data import CTCData
-from trackastra.utils import add_timepoints_to_coords, masks2properties
+from trackastra.data import CTCData, wrfeat
 
 MICRO_SAM_AVAILABLE = False
 try:
@@ -880,6 +879,7 @@ class FeatureExtractorAugWrapper:
             force_recompute: bool = False,
         ):
         self.extractor = extractor
+        self.additional_features = extractor.additional_features
         self.n_aug = n_aug
         self.aug_pipeline = augmenter
         self.all_aug_features = {}  # n_aug -> {aug_id: {applied_augs, data}}
@@ -927,11 +927,16 @@ class FeatureExtractorAugWrapper:
             self._debug_view.add_image(embs, name="Embeddings", colormap="inferno")
             self._debug_view.add_image(images.cpu().numpy(), name="Images", colormap="viridis")
             self._debug_view.add_labels(masks.cpu().numpy(), name="Masks")
-        labels, ts, coords = masks2properties(images.cpu().numpy(), masks.cpu().numpy())
-        coords = add_timepoints_to_coords(coords, ts)
-        feats = self.extractor.compute_region_features(coords, masks, ts, labels)
-        feat_dict = self._create_feat_dict(labels, ts, coords, feats)
-        return feat_dict
+
+        images, masks = images.cpu().numpy(), masks.cpu().numpy()
+        features = wrfeat.WRAugPretrainedFeatures.from_mask_img(
+            img=images,
+            mask=masks,
+            feature_extractor=self.extractor,
+            t_start=0,
+            additional_properties=self.extractor.additional_features,
+        )
+        return features.to_dict()
     
     def _compute_original(self, images, masks):
         """Computes the original features for the images and masks."""
@@ -1002,20 +1007,20 @@ class FeatureExtractorAugWrapper:
 
         return self.all_aug_features
 
-    def _create_feat_dict(self, labels, ts, coords, features):
-        """Creates a dictionary with the augmented features."""
-        aug_feat_dict = {}
-        features = features.cpu().numpy()
-        for i, (t, lab) in enumerate(zip(ts, labels)):
-            t = int(t)
-            lab = int(lab)
-            if t not in aug_feat_dict:
-                aug_feat_dict[t] = {}
-            aug_feat_dict[t][lab] = {
-                "coords": coords[i],
-                "features": features[i],
-            }
-        return aug_feat_dict
+    # def _create_feat_dict(self, labels, ts, coords, features):
+    #     """Creates a dictionary with the augmented features."""
+    #     aug_feat_dict = {}
+    #     features = features.cpu().numpy()
+    #     for i, (t, lab) in enumerate(zip(ts, labels)):
+    #         t = int(t)
+    #         lab = int(lab)
+    #         if t not in aug_feat_dict:
+    #             aug_feat_dict[t] = {}
+    #         aug_feat_dict[t][lab] = {
+    #             "coords": coords[i],
+    #             "features": features[i],
+    #         }
+    #     return aug_feat_dict
 
     def _save_features(self, aug_id: int, aug_data: dict):
         """Saves the features for a specific augmentation to disk as HDF5."""
@@ -1043,7 +1048,11 @@ class FeatureExtractorAugWrapper:
                 for lab, lab_data in data.items():
                     lab_group = t_group.create_group(f"label_{lab}")
                     lab_group.create_dataset("coords", data=lab_data["coords"], compression="gzip")
-                    lab_group.create_dataset("features", data=lab_data["features"], compression="gzip")
+                    # lab_group.create_dataset("features", data=lab_data["features"], compression="gzip")
+                    
+                    features_group = lab_group.create_group("features")
+                    for key, value in lab_data["features"].items():
+                        features_group.create_dataset(key, data=value, compression="gzip")
 
         logger.info(f"Augmented features for augmentation {aug_id} saved to {self.save_path}.")
 
@@ -1065,7 +1074,7 @@ class FeatureExtractorAugWrapper:
         if not path.exists():
             raise FileNotFoundError(f"Path {path} does not exist.")
         
-        features = {}
+        all_data = {}
         with h5py.File(path, "r") as f:
             logger.debug(f"Exisiting groups : {list(f.keys())}")
             for aug_id, group in f.items():
@@ -1081,15 +1090,19 @@ class FeatureExtractorAugWrapper:
                     data[t] = {}
                     for lab, lab_group in t_group.items():
                         lab = int(lab.split("_")[-1])
+                        features = {}
+                        if "features" in lab_group:
+                            for key, dataset in lab_group["features"].items():
+                                features[key] = np.array(dataset)
                         data[t][lab] = {
                             "coords": np.array(lab_group["coords"]),
-                            "features": np.array(lab_group["features"]),
+                            "features": features,
                         }
-                features[aug_id] = {
+                all_data[aug_id] = {
                     "applied_augs": applied_augs,
                     "data": data,
                 }
-        return features
+        return all_data
        
 
 ##############

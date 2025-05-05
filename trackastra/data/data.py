@@ -1239,7 +1239,7 @@ class CTCData(Dataset):
                 self.feature_extractor.precompute_image_embeddings(imgs)  # use NON_NORMALIZED images for pretrained features
                 # normalization is performed in the feature extractor
                 features = [
-                    wrfeat.WRPretrainedFeatures.from_pretrained_features(
+                    wrfeat.WRPretrainedFeatures.from_mask_img(
                         img=img[np.newaxis], 
                         mask=mask[np.newaxis], 
                         feature_extractor=self.feature_extractor, 
@@ -1440,7 +1440,8 @@ class CTCData(Dataset):
             img_shape, 
             save_path=self.feature_extractor_save_path,
             mode=self.pretrained_config.mode,
-            device=self.pretrained_config.device
+            device=self.pretrained_config.device,
+            additional_features=self.pretrained_config.additional_features,
         )
         self.feature_extractor_input_size = self.feature_extractor.input_size
         
@@ -1572,13 +1573,13 @@ class CTCDataAugPretrainedFeats(CTCData):
         
     def _get_ndim_and_nobj(self, start, windows=None):
         if windows is not None:
-            self.ndim = windows[0]["coords"][0][0].shape[0] - 1
+            self.ndim = windows[0]["coords"][0][0].shape[0]
             self.n_objects = tuple(len(t["coords"][0]) for t in windows)
             return
         if self.save_windows:
             return
         if len(self.windows) > 0:
-            self.ndim = self.windows[0]["coords"][0].shape[1] - 1
+            self.ndim = self.windows[0]["coords"][0].shape[1]
             self.n_objects = tuple(len(t["coords"][0]) for t in self.windows)
             logger.info(
                 f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
@@ -1712,7 +1713,10 @@ class CTCDataAugPretrainedFeats(CTCData):
         #         - t: frame between 0 and n_frames
         #           - lab: label of the detection
         #               - coords: coordinates of the detections for (t, lab)
-        #               - features: features of the detections for (t, lab)
+        #               - features: dict of features for (t, lab)
+        #                   - feat_name_1: feature 1 for (t, lab)
+        #                   - ...   
+        #                   - feat_name_n: feature n for (t, lab)
                 
         for t1, t2 in tqdm(
             zip(range(0, n_frames), range(window_size, n_frames + 1)),
@@ -1727,40 +1731,50 @@ class CTCDataAugPretrainedFeats(CTCData):
             # _coords should be a dict with n_aug keys, each with a list of coords for each label
             # {n_aug: [np.ndarray(3)]} with list of len n_labels
             _coords = {aug_id: [] for aug_id in range(n_entries)}
+            _features = {aug_id: {} for aug_id in range(n_entries)}
             for aug_id in range(n_entries):
                 for t in range(t1, t2):
                     labels_at_t = _labels[_ts == t]
                     data = augmented_dict[str(aug_id)]["data"]
+                    
+                    # Coords
                     coords_at_t = [
                         data[t][lab]["coords"]
                         for lab in labels_at_t
                     ]
                     if len(coords_at_t) == 0:  # handle empty frames
-                        coords_at_t = np.zeros((0, self.ndim + 1), dtype=int) 
+                        coords_at_t = np.zeros((0, self.ndim), dtype=int) 
                     else:
                         coords_at_t = np.stack(coords_at_t, axis=0)
                     _coords[aug_id].extend(coords_at_t)
-            
-                if not len(_coords[aug_id]) == len(_labels):
-                    raise ValueError(f"Number of coords {len(_coords[aug_id])} does not match number of labels {len(_labels)}")
-            
-            _features = {aug_id: [] for aug_id in range(n_entries)}
-            for aug_id in range(n_entries):
-                for t in range(t1, t2):
-                    labels_at_t = _labels[_ts == t]
-                    data = augmented_dict[str(aug_id)]["data"]
+                    
+                    # Features
                     features_at_t = [
                         data[t][lab]["features"]
                         for lab in labels_at_t
                     ]
                     if len(features_at_t) == 0:
-                        features_at_t = np.zeros((0, self.feat_dim), dtype=np.float32)
+                        features_at_t = {}
                     else:
-                        features_at_t = np.stack(features_at_t, axis=0)
-                    _features[aug_id].extend(features_at_t)
+                        # Ensure features_at_t is a list of dictionaries
+                        features_at_t = [dict(f) for f in features_at_t]
+
+                    for _f in features_at_t:
+                        for k, v in _f.items():
+                            if k not in _features[aug_id]:
+                                _features[aug_id][k] = []
+                            _features[aug_id][k].append(v)
+                
+                if not len(_coords[aug_id]) == len(_labels):
+                    raise ValueError(f"Number of coords {len(_coords[aug_id])} does not match number of labels {len(_labels)}")
             
-                if not len(_features[aug_id]) == len(_labels):
-                    raise ValueError(f"Number of features {len(_features[aug_id])} does not match number of labels {len(_labels)}") 
+                if not len(_features[aug_id]["pretrained_feats"]) == len(_labels):
+                    raise ValueError(f"Number of features {len(_features[aug_id]['pretrained_feats'])} does not match number of labels {len(_labels)}") 
+            
+            for aug_id in range(n_entries):
+                _coords[aug_id] = np.array(_coords[aug_id], dtype=np.float32)
+                for k, v in _features[aug_id].items():
+                    _features[aug_id][k] = np.array(v, dtype=np.float32)
             
             if len(_labels) == 0:
                 # raise ValueError(f"No detections in sample {det_folder}:{t1}")
@@ -1803,8 +1817,10 @@ class CTCDataAugPretrainedFeats(CTCData):
                         del f[group_name]
                     grp = f.create_group(group_name)
                     for aug_id in range(self.n_augs + 1):
-                        grp.create_dataset(f"feats_{aug_id}", data=w["features"][aug_id])
                         grp.create_dataset(f"coords_{aug_id}", data=w["coords"][aug_id])
+                        features_group = grp.create_group(f"features_{aug_id}")
+                        for k, v in w["features"][aug_id].items():
+                            features_group.create_dataset(k, data=v)
                     grp.create_dataset("labels", data=w["labels"])
                     grp.create_dataset("timepoints", data=w["timepoints"])
                     grp.create_dataset("assoc_matrix", data=w["assoc_matrix"])
@@ -1818,7 +1834,11 @@ class CTCDataAugPretrainedFeats(CTCData):
         with h5py.File(self._aug_embeds_h5, "r") as f:
             grp = f[f"window_{window_id}"]
             coords = grp[f"coords_{aug_choice}"][()]
-            features = grp[f"feats_{aug_choice}"][()]
+            # features = grp[f"feats_{aug_choice}"][()]
+            # features is now a dict, see _save_windows
+            features = {}
+            for k, v in grp[f"features_{aug_choice}"].items():
+                features[k] = v[()]
             labels = grp["labels"][()]
             timepoints = grp["timepoints"][()]
             assoc_matrix = grp["assoc_matrix"][()]
@@ -1885,20 +1905,19 @@ class CTCDataAugPretrainedFeats(CTCData):
             assoc_matrix = CTCDataAugPretrainedFeats.decompress(assoc_matrix)
         
         coords = np.stack(coords, axis=0)
-        features = np.stack(features, axis=0)
+        # features = np.stack(features, axis=0)
 
-        if self.augment_level > 0:
-            augment_wrfeat = wrfeat.WRAugPretrainedFeatures.from_window(
-                features=features,
-                coords=coords,
-                timepoints=timepoints,
-                labels=labels,
-            )
-            augmented_data, assoc_matrix = self._augment_item(augment_wrfeat, labels, timepoints, assoc_matrix)
-            if not isinstance(augmented_data, wrfeat.WRAugPretrainedFeatures):
-                raise ValueError("Augmented data is not a WRAugPretrainedFeatures. Check that augmenter return type is correct.")
-            features, coords, timepoints, labels = augmented_data.to_window()
-            
+        augment_wrfeat = wrfeat.WRAugPretrainedFeatures.from_window(
+            features=features,
+            coords=coords,
+            timepoints=timepoints,
+            labels=labels,
+        )
+        augmented_data, assoc_matrix = self._augment_item(augment_wrfeat, labels, timepoints, assoc_matrix)
+        if not isinstance(augmented_data, wrfeat.WRAugPretrainedFeatures):
+            raise ValueError("Augmented data is not a WRAugPretrainedFeatures. Check that augmenter return type is correct.")
+        features, coords, timepoints, labels = augmented_data.to_window()
+        
         shapes = [
             len(labels),
             len(timepoints),

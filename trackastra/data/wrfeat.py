@@ -246,15 +246,9 @@ class WRPretrainedFeatures(WRFeatures):
     ):
         super().__init__(coords, labels, timepoints, features)
         self.additional_properties = additional_properties
-
-    @classmethod
-    def from_mask_img():
-        raise NotImplementedError(
-            "Please use from_pretrained_features instead of from_mask_img"
-        )
     
     @classmethod
-    def from_pretrained_features(
+    def from_mask_img(
         cls,
         img: np.ndarray,
         mask: np.ndarray,
@@ -264,8 +258,8 @@ class WRPretrainedFeatures(WRFeatures):
     ) -> WRPretrainedFeatures:
 
         ndim = img.ndim - 1
-        if ndim not in (2, 3):
-            raise ValueError("Only 2D or 3D data is supported")
+        if ndim != 2:
+            raise ValueError("Only 2D data is supported")
             
         df, coords, labels, timepoints, properties = cls.get_regionprops_features(
             additional_properties, mask, img, t_start=t_start
@@ -291,7 +285,7 @@ class WRPretrainedFeatures(WRFeatures):
         )
 
 
-class WRAugPretrainedFeatures(WRFeatures):
+class WRAugPretrainedFeatures(WRPretrainedFeatures):
 
     def __init__(
         self,
@@ -299,21 +293,16 @@ class WRAugPretrainedFeatures(WRFeatures):
         labels: np.ndarray,
         timepoints: np.ndarray,
         features: OrderedDict[np.ndarray],
+        additional_properties: str | None = None,
     ):
-        super().__init__(coords, labels, timepoints, features)
+        super().__init__(coords, labels, timepoints, features, additional_properties)
         self.ndim = coords.shape[-1]
         if self.ndim != 2:
             raise ValueError("Only 2D data is supported")
 
     def __len__(self):
         return super().__len__()
-    
-    @classmethod
-    def from_mask_img(self, *args, **kwargs):
-        raise NotImplementedError(
-            "Please use from_window instead of from_mask_img"
-        )
-    
+        
     @classmethod
     def from_window(cls, features, coords, timepoints, labels):
         """Build a WRAugPretrainedFeatures from a window.
@@ -324,10 +313,7 @@ class WRAugPretrainedFeatures(WRFeatures):
             timepoints (np.ndarray): The timepoints to use.
             labels (np.ndarray): The labels to use.
         """
-        coords = coords[:, 1:]
-        features = OrderedDict(
-            pretrained_feats=features,
-        )
+        # coords = coords[:, 1:]
         return cls(
             coords=coords,
             labels=labels,
@@ -338,9 +324,28 @@ class WRAugPretrainedFeatures(WRFeatures):
     def to_window(self):
         """Convert the features to a window."""
         coords = np.concatenate((self.timepoints[:, None], self.coords), axis=-1)
-        feats = self.features["pretrained_feats"]
+        feats = np.concatenate(
+            [v for _, v in self.features.items()], axis=-1
+        )
         return feats, coords, self.timepoints, self.labels
     
+    def to_dict(self):
+        """Convert the features to a dictionary."""
+        res = {}
+        for i, (t, lab) in enumerate(zip(self.timepoints, self.labels)):
+            t = int(t)
+            lab = int(lab)
+            if t not in res:
+                res[t] = {}
+            feat_dict = {}
+            for k, v in self.features.items():
+                feat_dict[k] = v[i]
+            res[t][lab] = {
+                "coords": self.coords[i],
+                "features": dict(feat_dict),
+            }
+        return res
+
 
 # Augmentations
 
@@ -409,13 +414,19 @@ class WRRandomCrop:
         )
 
         idx = _filter_points(points, shape=crop_size, origin=corner)
-
+        try:
+            feats = OrderedDict(
+                (k, v[idx]) for k, v in features.features.items()
+            )
+        except Exception as e:
+            # breakpoint()
+            raise e
         return (
             self.return_type(
                 coords=points[idx],
                 labels=features.labels[idx],
                 timepoints=features.timepoints[idx],
-                features=OrderedDict((k, v[idx]) for k, v in features.features.items()),
+                features=feats,
             ),
             idx,
         )
@@ -824,7 +835,7 @@ def get_features(
     elif features == "pretrained_feats":
         feature_extractor.precompute_image_embeddings(imgs)
         features = [
-                    WRPretrainedFeatures.from_pretrained_features(
+                    WRPretrainedFeatures.from_mask_img(
                         img=img[np.newaxis], mask=mask[np.newaxis], feature_extractor=feature_extractor, t_start=t, additional_properties=feature_extractor.additional_features,
                     )
                     for t, (mask, img) in enumerate(zip(detections, imgs))
