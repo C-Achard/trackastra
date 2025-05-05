@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import logging
-from collections import OrderedDict
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from timeit import default_timer
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -1481,56 +1479,6 @@ class CTCData(Dataset):
             return
         else:
             self._compute_pretrained_model_features()
-
-
-@dataclass
-class WRAugContainer:
-    # FIXME might be better to create a subclass "fixture" from WRFeat 
-    # so that the return type does not have to be changed for every augmentation
-    """Container for the augmented features.
-    
-    Allows to use WRFeat augmentations without actually building WRFeat objects.
-    """
-
-    features: np.ndarray
-    coords: np.ndarray
-    timepoints: np.ndarray
-    labels: np.ndarray
-        
-    @classmethod
-    def build_from_window(cls, features, coords, timepoints, labels):
-        """Build a WRAugContainer from a window.
-        
-        Args:
-            features (np.ndarray): The features to use.
-            coords (np.ndarray): The coordinates to use.
-            timepoints (np.ndarray): The timepoints to use.
-            labels (np.ndarray): The labels to use.
-        """
-        coords = coords[:, 1:]
-        features = OrderedDict(
-            pretrained_feats=features,
-        )
-        return cls(
-            features=features,
-            coords=coords,
-            timepoints=timepoints,
-            labels=labels,
-        )
-    
-    def __len__(self):
-        return len(self.timepoints)
-    
-    @property
-    def ndim(self):
-        return self.coords.shape[-1]
-    
-    def get_data(self):
-        feats = self.features["pretrained_feats"]
-        coords = np.concatenate((self.timepoints[:, None], self.coords), axis=-1)
-        timepoints = self.timepoints
-        labels = self.labels
-        return feats, coords, timepoints, labels
     
 
 class CTCDataAugPretrainedFeats(CTCData):
@@ -1617,8 +1565,8 @@ class CTCDataAugPretrainedFeats(CTCData):
         self
     ):
         logger.debug(f"Creating augmentations with level {self.augment_level}")
-        augmenter = wrfeat.AugmentationFactory.create_augmentation_pipeline(self.augment_level, return_type=WRAugContainer)
-        cropper = wrfeat.AugmentationFactory.create_cropper(self.crop_size, self.ndim, return_type=WRAugContainer) if self.crop_size is not None else None
+        augmenter = wrfeat.AugmentationFactory.create_augmentation_pipeline(self.augment_level, return_type=wrfeat.WRAugPretrainedFeatures)
+        cropper = wrfeat.AugmentationFactory.create_cropper(self.crop_size, self.ndim, return_type=wrfeat.WRAugPretrainedFeatures) if self.crop_size is not None else None
 
         return augmenter, cropper
         
@@ -1879,7 +1827,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             t1 = grp.attrs["t1"]
             return coords, features, labels, timepoints, assoc_matrix, t1
     
-    def _augment_item(self, item: WRAugContainer, labels, timepoints, assoc_matrix):
+    def _augment_item(self, item: wrfeat.WRAugPretrainedFeatures, labels, timepoints, assoc_matrix):
         """Apply augmentations to the features."""
         # FIXME some arguments are redundant
         if self.cropper is not None:
@@ -1940,16 +1888,16 @@ class CTCDataAugPretrainedFeats(CTCData):
         features = np.stack(features, axis=0)
 
         if self.augment_level > 0:
-            augment_container = WRAugContainer.build_from_window(
+            augment_wrfeat = wrfeat.WRAugPretrainedFeatures.from_window(
                 features=features,
                 coords=coords,
                 timepoints=timepoints,
                 labels=labels,
             )
-            augmented_data, assoc_matrix = self._augment_item(augment_container, labels, timepoints, assoc_matrix)
-            if not isinstance(augmented_data, WRAugContainer):
-                raise ValueError("Augmented data is not a WRAugContainer. Check that augmenter return type is correct.")
-            features, coords, timepoints, labels = augmented_data.get_data()
+            augmented_data, assoc_matrix = self._augment_item(augment_wrfeat, labels, timepoints, assoc_matrix)
+            if not isinstance(augmented_data, wrfeat.WRAugPretrainedFeatures):
+                raise ValueError("Augmented data is not a WRAugPretrainedFeatures. Check that augmenter return type is correct.")
+            features, coords, timepoints, labels = augmented_data.to_window()
             
         shapes = [
             len(labels),

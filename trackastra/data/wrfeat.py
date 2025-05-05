@@ -146,7 +146,7 @@ class WRFeatures:
             for k, v in self.features.items()
         )
 
-        return WRFeatures(
+        return self.__class__(
             coords=coords, labels=labels, timepoints=timepoints, features=features
         )
         
@@ -289,6 +289,58 @@ class WRPretrainedFeatures(WRFeatures):
         return cls(
             coords=coords, labels=labels, timepoints=timepoints, features=feats_dict, additional_properties=additional_properties
         )
+
+
+class WRAugPretrainedFeatures(WRFeatures):
+
+    def __init__(
+        self,
+        coords: np.ndarray,
+        labels: np.ndarray,
+        timepoints: np.ndarray,
+        features: OrderedDict[np.ndarray],
+    ):
+        super().__init__(coords, labels, timepoints, features)
+        self.ndim = coords.shape[-1]
+        if self.ndim != 2:
+            raise ValueError("Only 2D data is supported")
+
+    def __len__(self):
+        return super().__len__()
+    
+    @classmethod
+    def from_mask_img(self, *args, **kwargs):
+        raise NotImplementedError(
+            "Please use from_window instead of from_mask_img"
+        )
+    
+    @classmethod
+    def from_window(cls, features, coords, timepoints, labels):
+        """Build a WRAugPretrainedFeatures from a window.
+        
+        Args:
+            features (np.ndarray): The features to use.
+            coords (np.ndarray): The coordinates to use.
+            timepoints (np.ndarray): The timepoints to use.
+            labels (np.ndarray): The labels to use.
+        """
+        coords = coords[:, 1:]
+        features = OrderedDict(
+            pretrained_feats=features,
+        )
+        return cls(
+            coords=coords,
+            labels=labels,
+            timepoints=timepoints,
+            features=features,
+        )
+    
+    def to_window(self):
+        """Convert the features to a window."""
+        coords = np.concatenate((self.timepoints[:, None], self.coords), axis=-1)
+        feats = self.features["pretrained_feats"]
+        return feats, coords, self.timepoints, self.labels
+    
 
 # Augmentations
 
