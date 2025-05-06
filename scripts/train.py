@@ -910,6 +910,7 @@ def train(args):
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
             use_coords=args.use_coords,
+            expand_features=args.expand_additional_feats,
         )
 
         dummy_model_lightning = WrappedLightningModule(
@@ -1052,6 +1053,7 @@ def train(args):
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
             use_coords=args.use_coords,
+            expand_features=args.expand_additional_feats,
         )
 
     model_lightning = WrappedLightningModule(
@@ -1356,6 +1358,12 @@ def parse_train_args():
         type=str2bool,
         default=True,
         help="Use coordinates as input features. --features cannot be none if True.",
+    )
+    parser.add_argument(
+        "--expand_additional_feats",
+        type=int,
+        default=None,
+        help="If not None, applies the feat_embed_per_dim only for the n first specified feature dimensions. The rest are not expanded.",
     )
 
     args, unknown_args = parser.parse_known_args()

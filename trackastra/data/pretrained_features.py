@@ -269,7 +269,7 @@ class PretrainedAugmentations:
         self.aug_list = [
             BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
             FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
-            RotAugment(degrees=10, rng_seed=rng_seed),
+            # RotAugment(degrees=10, rng_seed=rng_seed),
             Rot90Augment(p=0.5, rng_seed=rng_seed),
             AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
             ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),

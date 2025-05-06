@@ -289,6 +289,7 @@ class TrackingTransformer(torch.nn.Module):
         ] = "quiet_softmax",
         attn_dist_mode: str = "v0",
         use_coords: bool = True,
+        expand_features: int | None = None
     ):
         super().__init__()
 
@@ -312,6 +313,7 @@ class TrackingTransformer(torch.nn.Module):
             causal_norm=causal_norm,
             attn_dist_mode=attn_dist_mode,
             use_coords=use_coords,
+            expand_features=expand_features,
         )
 
         # TODO remove, alredy present in self.config
@@ -319,18 +321,22 @@ class TrackingTransformer(torch.nn.Module):
         # self.feat_dim = feat_dim
         # self.coord_dim = coord_dim
         self._use_coords = use_coords
+        self._expand_features_dim = expand_features
         
         if self._use_coords:
-            self.proj = nn.Linear(
-                (1 + coord_dim) * pos_embed_per_dim + 
-                feat_dim * feat_embed_per_dim, d_model
-            )
+            coords_proj_dims = (1 + coord_dim) * pos_embed_per_dim
         else:
-            self.proj = nn.Linear(
-                pos_embed_per_dim +
-                feat_dim * feat_embed_per_dim, d_model
-            )
+            coords_proj_dims = pos_embed_per_dim
         
+        if self._expand_features_dim is not None:
+            feats_proj_dims = (feat_dim - self._expand_features_dim) + (self._expand_features_dim * feat_embed_per_dim)
+        else:
+            feats_proj_dims = feat_dim * feat_embed_per_dim
+        
+        self.proj = nn.Linear(
+            coords_proj_dims + feats_proj_dims,
+            d_model
+        )
         self.norm = nn.LayerNorm(d_model)
 
         self.encoder = nn.ModuleList(
@@ -370,11 +376,18 @@ class TrackingTransformer(torch.nn.Module):
         self.head_y = FeedForward(d_model)
 
         if feat_embed_per_dim > 1:
-            self.feat_embed = PositionalEncoding(
-                cutoffs=(1000,) * feat_dim,
-                n_pos=(feat_embed_per_dim,) * feat_dim,
-                cutoffs_start=(0.01,) * feat_dim,
-            )
+            if self._expand_features_dim is not None:
+                self.feat_embed = PositionalEncoding(
+                    cutoffs=(1000,) * self._expand_features_dim,
+                    n_pos=(feat_embed_per_dim,) * self._expand_features_dim,
+                    cutoffs_start=(0.01,) * self._expand_features_dim,
+                )
+            else:
+                self.feat_embed = PositionalEncoding(
+                    cutoffs=(1000,) * feat_dim,
+                    n_pos=(feat_embed_per_dim,) * feat_dim,
+                    cutoffs_start=(0.01,) * feat_dim,
+                )
         else:
             self.feat_embed = nn.Identity()
 
@@ -413,7 +426,12 @@ class TrackingTransformer(torch.nn.Module):
             if features is None or features.numel() == 0:
                 features = pos
             else:
-                features = self.feat_embed(features)
+                if self._expand_features_dim is None:
+                    features = self.feat_embed(features)
+                else:
+                    features[..., :self._expand_features_dim] = self.feat_embed(
+                        features[..., :self._expand_features_dim]
+                    )
                 # if self._use_coords:
                 features = torch.cat((pos, features), axis=-1)
         
