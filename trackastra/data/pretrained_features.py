@@ -496,9 +496,10 @@ class FeatureExtractor(ABC):
         logger.info(f"Using model {model_name} with mode {mode} for pretrained feature extraction.")
         backbone = cls._available_backbones[model_name]["class"]
         backbone.model_name = model_name
-        backbone.additional_features = additional_features
-        return backbone(image_shape, save_path, device=device, mode=mode)
-
+        model = backbone(image_shape, save_path, device=device, mode=mode)
+        model.additional_features = additional_features
+        return model
+        
     @classmethod
     def from_config(cls, config: PretrainedFeatureExtractorConfig, image_shape: tuple[int, int], save_path: str | Path):
         cls._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
