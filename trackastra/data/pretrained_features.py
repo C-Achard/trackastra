@@ -1063,12 +1063,15 @@ class FeatureExtractorAugWrapper:
         if not self.save_path.exists():
             raise FileNotFoundError(f"Path {self.save_path} does not exist.")
         
-        features = FeatureExtractorAugWrapper.load_features(self.save_path)
+        features = FeatureExtractorAugWrapper.load_features(
+                self.save_path,
+                additional_props=self.additional_features,
+            )
         self.all_aug_features = features
         return features
 
     @staticmethod
-    def load_features(path: str | Path) -> dict:
+    def load_features(path: str | Path, additional_props: str | None = None) -> dict:
         """Loads the features for a specific augmentation from disk."""
         if not isinstance(path, Path):
             path = Path(path)
@@ -1094,7 +1097,18 @@ class FeatureExtractorAugWrapper:
                         features = {}
                         if "features" in lab_group:
                             for key, dataset in lab_group["features"].items():
-                                features[key] = np.array(dataset)
+                                if additional_props is not None:
+                                    required_features = wrfeat._PROPERTIES[additional_props]
+                                    if len(required_features) == 0:
+                                        required_features = "pretrained_feats"
+                                    else:
+                                        required_features += "pretrained_feats"
+                                    if key in required_features:
+                                        features[key] = np.array(dataset)
+                                else:
+                                    features[key] = np.array(dataset)
+                            if len(features) == 0:
+                                raise ValueError(f"No features found for label {lab} in timepoint {t}.")
                         data[t][lab] = {
                             "coords": np.array(lab_group["coords"]),
                             "features": features,

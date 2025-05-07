@@ -909,7 +909,8 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
-            use_coords=args.use_coords,
+            disable_xy_coords=args.disable_xy_coords,
+            disable_all_coords=args.disable_all_coords,
             expand_features=args.expand_additional_feats,
         )
 
@@ -1052,7 +1053,8 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
-            use_coords=args.use_coords,
+            disable_xy_coords=args.disable_xy_coords,
+            disable_all_coords=args.disable_all_coords,
             expand_features=args.expand_additional_feats,
         )
 
@@ -1354,16 +1356,22 @@ def parse_train_args():
         help="Number of augmentations to use for pretrained features. Only valid if features is pretrained_feats_aug",
     )
     parser.add_argument(
-        "--use_coords",
-        type=str2bool,
-        default=True,
-        help="Use coordinates as input features. --features cannot be none if True.",
-    )
-    parser.add_argument(
         "--expand_additional_feats",
         type=int,
         default=None,
         help="If not None, applies the feat_embed_per_dim only for the n first specified feature dimensions. The rest are not expanded.",
+    )
+    parser.add_argument(
+        "--disable_xy_coords",
+        type=str2bool,
+        default=False,
+        help="Disable x and y coordinates as input features. --features cannot be none if True.",
+    )
+    parser.add_argument(
+        "--disable_all_coords",
+        type=str2bool,
+        default=False,
+        help="Disable all coordinates T(Z)XY as input features. --features cannot be none if True.",
     )
 
     args, unknown_args = parser.parse_known_args()

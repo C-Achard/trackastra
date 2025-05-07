@@ -465,8 +465,8 @@ class WRBaseAugmentation(ABC):
                 logger.warning(f"NaNs found in {k} after {self.__class__.__name__} augmentation")
             if np.any(np.isinf(f)):
                 logger.warning(f"Infs found in {k} after {self.__class__.__name__} augmentation")
-            if np.any(np.all(f == 0, axis=-1)):
-                logger.warning(f"Empty {k} after {self.__class__.__name__} augmentation")
+            # if np.all(np.all(f == 0, axis=-1)):
+            # logger.warning(f"Empty {k} after {self.__class__.__name__} augmentation")
 
 
 class WRRandomFlip(WRBaseAugmentation):

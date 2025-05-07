@@ -288,12 +288,13 @@ class TrackingTransformer(torch.nn.Module):
             "none", "linear", "softmax", "quiet_softmax"
         ] = "quiet_softmax",
         attn_dist_mode: str = "v0",
-        use_coords: bool = True,
+        disable_xy_coords: bool = False,
+        disable_all_coords: bool = False,
         expand_features: int | None = None
     ):
         super().__init__()
 
-        if not use_coords:
+        if disable_xy_coords:
             coord_dim = 1
         
         self.config = dict(
@@ -312,7 +313,8 @@ class TrackingTransformer(torch.nn.Module):
             feat_embed_per_dim=feat_embed_per_dim,
             causal_norm=causal_norm,
             attn_dist_mode=attn_dist_mode,
-            use_coords=use_coords,
+            disable_xy_coords=disable_xy_coords,
+            disable_all_coords=disable_all_coords,
             expand_features=expand_features,
         )
 
@@ -320,13 +322,16 @@ class TrackingTransformer(torch.nn.Module):
         # self.window = window
         # self.feat_dim = feat_dim
         # self.coord_dim = coord_dim
-        self._use_coords = use_coords
+        self._disable_xy_coords = disable_xy_coords
+        self._disable_all_coords = disable_all_coords
         self._expand_features_dim = expand_features
         
-        if self._use_coords:
-            coords_proj_dims = (1 + coord_dim) * pos_embed_per_dim
-        else:
+        if self._disable_all_coords:
+            coords_proj_dims = 0
+        elif self._disable_xy_coords:
             coords_proj_dims = pos_embed_per_dim
+        else:
+            coords_proj_dims = (1 + coord_dim) * pos_embed_per_dim
         
         if self._expand_features_dim is not None:
             feats_proj_dims = (feat_dim - self._expand_features_dim) + (self._expand_features_dim * feat_embed_per_dim)
@@ -342,7 +347,7 @@ class TrackingTransformer(torch.nn.Module):
         self.encoder = nn.ModuleList(
             [
                 EncoderLayer(
-                    coord_dim if self._use_coords else 0,
+                    coord_dim if not self._disable_xy_coords else 0,
                     d_model,
                     nhead,
                     dropout,
@@ -358,7 +363,7 @@ class TrackingTransformer(torch.nn.Module):
         self.decoder = nn.ModuleList(
             [
                 DecoderLayer(
-                    coord_dim if self._use_coords else 0,
+                    coord_dim if not self._disable_xy_coords else 0,
                     d_model,
                     nhead,
                     dropout,
@@ -391,15 +396,17 @@ class TrackingTransformer(torch.nn.Module):
         else:
             self.feat_embed = nn.Identity()
 
-        if self._use_coords:
-            self.pos_embed = PositionalEncoding(
-                cutoffs=(window,) + (spatial_pos_cutoff,) * coord_dim,
-                n_pos=(pos_embed_per_dim,) * (1 + coord_dim),
-            )
-        else:
+        if self._disable_all_coords:
+            self.pos_embed = nn.Identity()
+        elif self._disable_xy_coords:
             self.pos_embed = PositionalEncoding(
                 cutoffs=(window,),
                 n_pos=(pos_embed_per_dim,),
+            )
+        else:
+            self.pos_embed = PositionalEncoding(
+                cutoffs=(window,) + (spatial_pos_cutoff,) * coord_dim,
+                n_pos=(pos_embed_per_dim,) * (1 + coord_dim),
             )
 
         # self.pos_embed = NoPositionalEncoding(d=pos_embed_per_dim * (1 + coord_dim))
@@ -417,23 +424,27 @@ class TrackingTransformer(torch.nn.Module):
         min_time = coords[:, :, :1].min(dim=1, keepdims=True).values
         coords = coords - min_time
 
-        if not self._use_coords:
+        if self._disable_xy_coords:
             coords = coords[:, :, :1]
 
-        pos = self.pos_embed(coords)
+        if not self._disable_all_coords:
+            pos = self.pos_embed(coords)
         
         with torch.amp.autocast(enabled=False, device_type=features.device.type):
             if features is None or features.numel() == 0:
+                if self._disable_all_coords:
+                    raise ValueError("features is None and all coords are disabled. Please enable at least one of the two.")
                 features = pos
             else:
                 if self._expand_features_dim is None:
                     features = self.feat_embed(features)
                 else:
-                    features[..., :self._expand_features_dim] = self.feat_embed(
-                        features[..., :self._expand_features_dim]
-                    )
-                # if self._use_coords:
-                features = torch.cat((pos, features), axis=-1)
+                    features_expanded = features[..., :self._expand_features_dim]
+                    features_non_expanded = features[..., self._expand_features_dim:]
+                    features_expanded = self.feat_embed(features_expanded)
+                    features = torch.cat((features_non_expanded, features_expanded), axis=-1)
+                if not self._disable_all_coords:
+                    features = torch.cat((pos, features), axis=-1)
         
             features = self.proj(features)
         # Clamp input when returning to mixed precision
