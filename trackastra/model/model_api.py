@@ -172,7 +172,8 @@ class Trackastra:
         progbar_class=tqdm,
         **kwargs,
     ) -> TrackGraph:
-        if self.train_args["features"] == "pretrained_feats":
+        fts = self.train_args["features"]
+        if fts == "pretrained_feats" or fts == "pretrained_feats_aug":
             additional_features = self.train_args.get(
                 "pretrained_feats_additional_props", None
             )

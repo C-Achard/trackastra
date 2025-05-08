@@ -39,6 +39,15 @@ _PROPERTIES = {
         "inertia_tensor",
         "border_dist",
     ),
+    "regionprops_full": (
+        "area",
+        "equivalent_diameter_area",
+        "intensity_mean",
+        "intensity_max",
+        "intensity_min",
+        "inertia_tensor",
+        "border_dist",
+    ),
 }
 
 
@@ -295,6 +304,14 @@ class WRAugPretrainedFeatures(WRPretrainedFeatures):
         features: OrderedDict[np.ndarray],
         additional_properties: str | None = None,
     ):
+        # if "pretrained_feats" is not the last feature, move it to the end
+        if "pretrained_feats" in features:
+            features_ = OrderedDict(
+                (k, v) for k, v in features.items() if k != "pretrained_feats"
+            )
+            features_["pretrained_feats"] = features["pretrained_feats"]
+            features = features_
+            
         super().__init__(coords, labels, timepoints, features, additional_properties)
         self.ndim = coords.shape[-1]
         if self.ndim != 2:
@@ -793,7 +810,7 @@ class AugmentationFactory:
 def get_features(
     detections: np.ndarray,
     imgs: np.ndarray | None = None,
-    features: Literal["none", "wrfeat", "pretrained_feats"] = "wrfeat",
+    features: Literal["none", "wrfeat", "pretrained_feats", "pretrained_feats_aug"] = "wrfeat",
     ndim: int = 2,
     n_workers=0,
     progbar_class=tqdm,
@@ -832,7 +849,7 @@ def get_features(
                     desc="Extracting features",
                 )
             )
-    elif features == "pretrained_feats":
+    elif features == "pretrained_feats" or features == "pretrained_feats_aug":
         feature_extractor.precompute_image_embeddings(imgs)
         features = [
                     WRPretrainedFeatures.from_mask_img(
