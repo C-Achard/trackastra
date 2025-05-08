@@ -1222,16 +1222,7 @@ def parse_train_args():
     parser.add_argument(
         "--features",
         type=str,
-        choices=[
-            "none",
-            "regionprops",
-            "regionprops2",
-            "patch",
-            "patch_regionprops",
-            "wrfeat",
-            "pretrained_feats",
-            "pretrained_feats_aug",
-        ],
+        choices=list(CTCData.VALID_FEATURES),
         default="wrfeat",
     )
     parser.add_argument(
