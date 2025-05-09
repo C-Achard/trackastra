@@ -1519,7 +1519,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             Configuration for the pretrained backbone.
             If mode is set to "pretrained_feats", this configuration is used to extract features.
             Ignored otherwise.
-        n_augmentations (int):
+        pretrained_n_augmentations (int):
             How many augmented versions of the pretrained model embeddings to create.
         force_recompute (bool):
             If False, previously computed offline augmentations are loaded if available.

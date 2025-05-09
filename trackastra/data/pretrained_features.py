@@ -1102,7 +1102,7 @@ class FeatureExtractorAugWrapper:
                                     if len(required_features) == 0:
                                         required_features = "pretrained_feats"
                                     else:
-                                        required_features += "pretrained_feats"
+                                        required_features += ("pretrained_feats", )
                                     if key in required_features:
                                         features[key] = np.array(dataset)
                                 else:

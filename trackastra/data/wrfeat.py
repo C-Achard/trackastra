@@ -253,6 +253,16 @@ class WRPretrainedFeatures(WRFeatures):
         features: OrderedDict[np.ndarray],
         additional_properties: str | None = None
     ):
+        # if "pretrained_feats" is not the last feature, move it to the end
+        if "pretrained_feats" in features:
+            features_ = OrderedDict(
+                (k, v) for k, v in features.items() if k != "pretrained_feats"
+            )
+            features_["pretrained_feats"] = features["pretrained_feats"]
+            features = features_
+        else:
+            raise ValueError("pretrained_feats not found in features")
+            
         super().__init__(coords, labels, timepoints, features)
         self.additional_properties = additional_properties
     
@@ -304,13 +314,6 @@ class WRAugPretrainedFeatures(WRPretrainedFeatures):
         features: OrderedDict[np.ndarray],
         additional_properties: str | None = None,
     ):
-        # if "pretrained_feats" is not the last feature, move it to the end
-        if "pretrained_feats" in features:
-            features_ = OrderedDict(
-                (k, v) for k, v in features.items() if k != "pretrained_feats"
-            )
-            features_["pretrained_feats"] = features["pretrained_feats"]
-            features = features_
             
         super().__init__(coords, labels, timepoints, features, additional_properties)
         self.ndim = coords.shape[-1]
