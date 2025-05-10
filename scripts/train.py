@@ -16,6 +16,7 @@ from timeit import default_timer
 
 import configargparse
 import git
+import humanize
 import lightning as pl
 import numpy as np
 import psutil
@@ -25,7 +26,6 @@ import yaml
 from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from lightning.pytorch.profilers import PyTorchProfiler
 from lightning.pytorch.utilities.rank_zero import rank_zero_only
-from numerize import numerize
 from skimage.morphology import binary_dilation, disk
 from torch.optim.lr_scheduler import LRScheduler
 from torchvision.utils import make_grid
@@ -839,7 +839,7 @@ def train(args):
         )
         
     pretrained_config = None
-    if args.features == "pretrained_feats":
+    if args.features == "pretrained_feats" or args.features == "pretrained_feats_aug":
         if args.pretrained_feats_model is None:
             raise ValueError(
                 "Pretrained model must be defined if pretrained features are in use."
@@ -853,20 +853,24 @@ def train(args):
             raise ValueError(
                 "Pretrained mode must be defined if pretrained features are in use."
             )
+        if args.features == "pretrained_feats_aug" and args.pretrained_n_augs is None:
+            raise ValueError(
+                "Number of augmentated copies must be defined if using augmented pretrained features."
+            )
         emb_save_path = None if args.cachedir is None else Path(args.cachedir).resolve()
         if not emb_save_path.exists():
             emb_save_path.mkdir(parents=False, exist_ok=True)
-        pca_save_path = (
-            Path(logdir) / "pca" if args.pretrained_feats_pca_ncomp else None
-        )
+        # pca_save_path = (
+        #     Path(logdir) / "pca" if args.pretrained_feats_pca_ncomp else None
+        # )
         
         pretrained_config = PretrainedFeatureExtractorConfig(
             model_name=args.pretrained_feats_model,
             mode=args.pretrained_feats_mode,
             save_path=emb_save_path,
             additional_features=args.pretrained_feats_additional_props,
-            pca_components=args.pretrained_feats_pca_ncomp,
-            pca_preprocessor_path=pca_save_path,
+            # pca_components=args.pretrained_feats_pca_ncomp,
+            # pca_preprocessor_path=pca_save_path,
         )
 
     n_gpus = torch.cuda.device_count() if args.distributed else 1
@@ -888,6 +892,7 @@ def train(args):
             crop_size=args.crop_size,
             compress=args.compress,
             pretrained_backbone_config=pretrained_config,
+            pretrained_n_augmentations=args.pretrained_n_augs,
         )
         dummy_model = TrackingTransformer(
             coord_dim=dummy_data.ndim,
@@ -904,6 +909,9 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
+            disable_xy_coords=args.disable_xy_coords,
+            disable_all_coords=args.disable_all_coords,
+            expand_features=args.expand_additional_feats,
         )
 
         dummy_model_lightning = WrappedLightningModule(
@@ -954,6 +962,7 @@ def train(args):
         crop_size=args.crop_size,
         compress=args.compress,
         pretrained_backbone_config=pretrained_config,
+        pretrained_n_augmentations=args.pretrained_n_augs,
     )
     sampler_kwargs = dict(
         batch_size=args.batch_size,
@@ -1023,7 +1032,7 @@ def train(args):
             model = TrackingTransformer.from_folder(fpath, args=args)
     else:
         # feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12 
-        if args.features == "pretrained_feats":  # TODO find a way to truly automate this
+        if args.features == "pretrained_feats" or args.features == "pretrained_feats_aug":  # TODO find a way to truly automate this
             feat_dim = pretrained_config.feat_dim
         else:
             feat_dim = CTCData.get_feat_dim(args.features, args.ndim)
@@ -1044,6 +1053,9 @@ def train(args):
             attn_positional_bias_n_spatial=args.attn_positional_bias_n_spatial,
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
+            disable_xy_coords=args.disable_xy_coords,
+            disable_all_coords=args.disable_all_coords,
+            expand_features=args.expand_additional_feats,
         )
 
     model_lightning = WrappedLightningModule(
@@ -1085,7 +1097,7 @@ def train(args):
 
     model_lightning.to(device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info(f"Model has {numerize.numerize(num_params)} parameters")
+    logging.info(f"Model has {humanize.intword(num_params)} parameters")
 
     if args.distributed:
         strategy = "ddp"
@@ -1099,10 +1111,17 @@ def train(args):
     else:
         profiler = None
 
+    import platform
+
+    from lightning.pytorch.strategies import DDPStrategy
+    
+    if platform.system() == "Windows":
+        strategy = DDPStrategy(process_group_backend="gloo")
+
     trainer = pl.Trainer(
-        accelerator="auto",
+        accelerator="gpu" if torch.cuda.is_available() else "cpu",
         strategy=strategy,
-        devices=n_gpus,
+        devices=n_gpus if torch.cuda.is_available() else 1,
         precision="16-mixed" if args.mixedp else 32,
         logger=train_logger,
         num_nodes=1,
@@ -1203,15 +1222,7 @@ def parse_train_args():
     parser.add_argument(
         "--features",
         type=str,
-        choices=[
-            "none",
-            "regionprops",
-            "regionprops2",
-            "patch",
-            "patch_regionprops",
-            "wrfeat",
-            "pretrained_feats",
-        ],
+        choices=list(CTCData.VALID_FEATURES),
         default="wrfeat",
     )
     parser.add_argument(
@@ -1317,17 +1328,41 @@ def parse_train_args():
         default=None,
         help="Additional regionprops features to use in addition to pretrained model embeddings",
     )
-    parser.add_argument(
-        "--pretrained_feats_pca_ncomp",
-        type=int,
-        default=None,
-        help="Number of components to use for PCA dimensionality reduction. If None, no PCA is applied.",
-    )
+    # parser.add_argument(
+    #     "--pretrained_feats_pca_ncomp",
+    #     type=int,
+    #     default=None,
+    #     help="Number of components to use for PCA dimensionality reduction. If None, no PCA is applied.",
+    # )
     parser.add_argument(
         "--weight_decay",
         type=float,
         default=0.01,
         help="Weight decay for the AdamW optimizer",
+    )
+    parser.add_argument(
+        "--pretrained_n_augs",
+        type=int,
+        default=None,
+        help="Number of augmentations to use for pretrained features. Only valid if features is pretrained_feats_aug",
+    )
+    parser.add_argument(
+        "--expand_additional_feats",
+        type=int,
+        default=None,
+        help="If not None, applies the feat_embed_per_dim only for the n first specified feature dimensions. The rest are not expanded.",
+    )
+    parser.add_argument(
+        "--disable_xy_coords",
+        type=str2bool,
+        default=False,
+        help="Disable x and y coordinates as input features. --features cannot be none if True.",
+    )
+    parser.add_argument(
+        "--disable_all_coords",
+        type=str2bool,
+        default=False,
+        help="Disable all coordinates T(Z)XY as input features. --features cannot be none if True.",
     )
 
     args, unknown_args = parser.parse_known_args()

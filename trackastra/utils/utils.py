@@ -9,6 +9,8 @@ from timeit import default_timer
 import matplotlib
 import numpy as np
 import torch
+from skimage.measure import regionprops
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +159,73 @@ def _blockwise_sum_with_bounds(A: torch.Tensor, bounds: torch.Tensor, dim: int =
         B[i:j] = cum[j] - cum[i]
     B = B.transpose(0, dim)
     return B
+
+
+def add_timepoints_to_coords(coords, timepoints):
+    """Adds timepoints as the first dimension to the coordinates.
+
+    Args:
+        coords (np.ndarray): Coordinates of shape (N, 3) or (N, 2).
+        timepoints (np.ndarray): Timepoints of shape (N,).
+        
+    Returns:
+        np.ndarray: Coordinates with timepoints added as the first dimension of shape (N, 3) or (N, 4).
+    """
+    if coords.ndim not in [2] or coords.shape[1] not in [2, 3]:
+        raise ValueError("coords must be a 2D array with shape (N, 2) or (N, 3).")
+    if timepoints.ndim != 1 or timepoints.shape[0] != coords.shape[0]:
+        raise ValueError("timepoints must be a 1D array with the same length as the first dimension of coords.")
+
+    return np.column_stack((timepoints, coords))
+
+
+def masks2properties(imgs, masks, return_props_by_time=False):
+    """Turn label masks into lists of properties, sorted (ascending) by time and label id.
+
+    Args:
+        imgs (np.ndarray): T, (Z), H, W
+        masks (np.ndarray): T, (Z), H, W
+        return_props_by_time (bool): If True, return properties by time
+            (dict with keys 'coords' and 'labels' for each timepoint)
+
+    Returns:
+        labels: List of labels
+        ts: List of timepoints
+        coords: List of coordinates
+    """
+    # Get coordinates, timepoints, and labels of detections
+    labels = []
+    ts = []
+    coords = []
+    properties_by_time = dict()
+    assert len(imgs) == len(masks)
+    for _t, frame in tqdm(
+        enumerate(masks),
+        # total=len(detections),
+        leave=False,
+        desc="Loading masks and properties",
+    ):
+        regions = regionprops(frame)
+        t_labels = []
+        t_ts = []
+        t_coords = []
+        for _r in regions:
+            t_labels.append(_r.label)
+            t_ts.append(_t)
+            centroid = np.array(_r.centroid).astype(np.float16)
+            t_coords.append(centroid)
+
+        properties_by_time[_t] = dict(coords=t_coords, labels=t_labels)
+        labels.extend(t_labels)
+        ts.extend(t_ts)
+        coords.extend(t_coords)
+
+    labels = np.array(labels, dtype=int)
+    ts = np.array(ts, dtype=int)
+    coords = np.array(coords, dtype=np.float16)
+    if return_props_by_time:
+        return labels, ts, coords, properties_by_time
+    return labels, ts, coords
 
 
 def _bounds_from_timepoints(timepoints: torch.Tensor):

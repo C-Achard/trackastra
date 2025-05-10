@@ -73,9 +73,11 @@ class Trackastra:
         self.feature_extractor = None
 
     @classmethod
-    def from_folder(cls, dir: Path, device: str | None = None):
+    def from_folder(cls, dir: Path | str, device: str | None = None):
         # Always load to cpu first
-        transformer = TrackingTransformer.from_folder(dir, map_location="cpu")
+        transformer = TrackingTransformer.from_folder(
+            Path(dir).expanduser(), map_location="cpu"
+        )
         train_args = yaml.load(open(dir / "train_config.yaml"), Loader=yaml.FullLoader)
         return cls(transformer=transformer, train_args=train_args, device=device)
 
@@ -170,7 +172,8 @@ class Trackastra:
         progbar_class=tqdm,
         **kwargs,
     ) -> TrackGraph:
-        if self.train_args["features"] == "pretrained_feats":
+        fts = self.train_args["features"]
+        if fts == "pretrained_feats" or fts == "pretrained_feats_aug":
             additional_features = self.train_args.get(
                 "pretrained_feats_additional_props", None
             )

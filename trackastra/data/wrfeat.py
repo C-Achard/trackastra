@@ -39,6 +39,15 @@ _PROPERTIES = {
         "inertia_tensor",
         "border_dist",
     ),
+    "regionprops_full": (
+        "area",
+        "equivalent_diameter_area",
+        "intensity_mean",
+        "intensity_max",
+        "intensity_min",
+        "inertia_tensor",
+        "border_dist",
+    ),
 }
 
 
@@ -146,7 +155,7 @@ class WRFeatures:
             for k, v in self.features.items()
         )
 
-        return WRFeatures(
+        return self.__class__(
             coords=coords, labels=labels, timepoints=timepoints, features=features
         )
         
@@ -244,17 +253,21 @@ class WRPretrainedFeatures(WRFeatures):
         features: OrderedDict[np.ndarray],
         additional_properties: str | None = None
     ):
+        # if "pretrained_feats" is not the last feature, move it to the end
+        if "pretrained_feats" in features:
+            features_ = OrderedDict(
+                (k, v) for k, v in features.items() if k != "pretrained_feats"
+            )
+            features_["pretrained_feats"] = features["pretrained_feats"]
+            features = features_
+        else:
+            raise ValueError("pretrained_feats not found in features")
+            
         super().__init__(coords, labels, timepoints, features)
         self.additional_properties = additional_properties
-
-    @classmethod
-    def from_mask_img():
-        raise NotImplementedError(
-            "Please use from_pretrained_features instead of from_mask_img"
-        )
     
     @classmethod
-    def from_pretrained_features(
+    def from_mask_img(
         cls,
         img: np.ndarray,
         mask: np.ndarray,
@@ -264,8 +277,8 @@ class WRPretrainedFeatures(WRFeatures):
     ) -> WRPretrainedFeatures:
 
         ndim = img.ndim - 1
-        if ndim not in (2, 3):
-            raise ValueError("Only 2D or 3D data is supported")
+        if ndim != 2:
+            raise ValueError("Only 2D data is supported")
             
         df, coords, labels, timepoints, properties = cls.get_regionprops_features(
             additional_properties, mask, img, t_start=t_start
@@ -290,6 +303,70 @@ class WRPretrainedFeatures(WRFeatures):
             coords=coords, labels=labels, timepoints=timepoints, features=feats_dict, additional_properties=additional_properties
         )
 
+
+class WRAugPretrainedFeatures(WRPretrainedFeatures):
+
+    def __init__(
+        self,
+        coords: np.ndarray,
+        labels: np.ndarray,
+        timepoints: np.ndarray,
+        features: OrderedDict[np.ndarray],
+        additional_properties: str | None = None,
+    ):
+            
+        super().__init__(coords, labels, timepoints, features, additional_properties)
+        self.ndim = coords.shape[-1]
+        if self.ndim != 2:
+            raise ValueError("Only 2D data is supported")
+
+    def __len__(self):
+        return super().__len__()
+        
+    @classmethod
+    def from_window(cls, features, coords, timepoints, labels):
+        """Build a WRAugPretrainedFeatures from a window.
+        
+        Args:
+            features (np.ndarray): The features to use.
+            coords (np.ndarray): The coordinates to use.
+            timepoints (np.ndarray): The timepoints to use.
+            labels (np.ndarray): The labels to use.
+        """
+        # coords = coords[:, 1:]
+        return cls(
+            coords=coords,
+            labels=labels,
+            timepoints=timepoints,
+            features=features,
+        )
+    
+    def to_window(self):
+        """Convert the features to a window."""
+        coords = np.concatenate((self.timepoints[:, None], self.coords), axis=-1)
+        feats = np.concatenate(
+            [v for _, v in self.features.items()], axis=-1
+        )
+        return feats, coords, self.timepoints, self.labels
+    
+    def to_dict(self):
+        """Convert the features to a dictionary."""
+        res = {}
+        for i, (t, lab) in enumerate(zip(self.timepoints, self.labels)):
+            t = int(t)
+            lab = int(lab)
+            if t not in res:
+                res[t] = {}
+            feat_dict = {}
+            for k, v in self.features.items():
+                feat_dict[k] = v[i]
+            res[t][lab] = {
+                "coords": self.coords[i],
+                "features": dict(feat_dict),
+            }
+        return res
+
+
 # Augmentations
 
 
@@ -302,17 +379,20 @@ class WRRandomCrop:
         - "timepoints"
         - "features"
     """
+    return_type = WRFeatures
 
     def __init__(
         self,
         crop_size: int | tuple[int] | None = None,
         ndim: int = 2,
+        return_type=WRFeatures,
     ) -> None:
         """crop_size: tuple of int
         can be tuple of length 1 (all dimensions)
                      of length ndim (y,x,...)
                      of length 2*ndim (y1,y2, x1,x2, ...).
         """
+        self.return_type = return_type
         if isinstance(crop_size, int):
             crop_size = (crop_size,) * 2 * ndim
         elif isinstance(crop_size, Iterable):
@@ -354,13 +434,19 @@ class WRRandomCrop:
         )
 
         idx = _filter_points(points, shape=crop_size, origin=corner)
-
+        try:
+            feats = OrderedDict(
+                (k, v[idx]) for k, v in features.features.items()
+            )
+        except Exception as e:
+            # breakpoint()
+            raise e
         return (
-            WRFeatures(
+            self.return_type(
                 coords=points[idx],
                 labels=features.labels[idx],
                 timepoints=features.timepoints[idx],
-                features=OrderedDict((k, v[idx]) for k, v in features.features.items()),
+                features=feats,
             ),
             idx,
         )
@@ -368,14 +454,18 @@ class WRRandomCrop:
 
 class WRBaseAugmentation(ABC):
     """Base class for windowed region augmentations."""
+    return_type = WRFeatures
+
     def __init__(self, p: float = 0.5) -> None:
         self._p = p
         self._rng = np.random.RandomState()
 
     def __call__(self, features: WRFeatures):
+        # logger.debug(f"Before augmentation: {self.__class__.__name__}, return_type={self.return_type}")
         if self._rng.rand() > self._p or len(features) == 0:
             return features
         feats = self._augment(features)
+        # logger.debug(f"After augmentation: {self.__class__.__name__}, return_type={self.return_type}")
         self.check_features(feats)
         return feats
 
@@ -385,8 +475,8 @@ class WRBaseAugmentation(ABC):
     
     def check_features(self, features: WRFeatures):
         """Check if features are valid."""
-        if not isinstance(features, WRFeatures):
-            raise ValueError(f"Expected WRFeatures, got {type(features)}")
+        if not isinstance(features, self.return_type):
+            raise ValueError(f"Expected {self.return_type}, got {type(features)}")
         if len(features) == 0:
             raise ValueError("Empty features")
         
@@ -395,10 +485,8 @@ class WRBaseAugmentation(ABC):
                 logger.warning(f"NaNs found in {k} after {self.__class__.__name__} augmentation")
             if np.any(np.isinf(f)):
                 logger.warning(f"Infs found in {k} after {self.__class__.__name__} augmentation")
-            if np.any(np.all(f == 0, axis=-1)):
-                logger.warning(f"Empty {k} after {self.__class__.__name__} augmentation")
-        
-        return True
+            # if np.all(np.all(f == 0, axis=-1)):
+            # logger.warning(f"Empty {k} after {self.__class__.__name__} augmentation")
 
 
 class WRRandomFlip(WRBaseAugmentation):
@@ -423,7 +511,7 @@ class WRRandomFlip(WRBaseAugmentation):
             (k, _transform_affine(k, v, M)) for k, v in features.features.items()
         )
 
-        return WRFeatures(
+        return self.return_type(
             coords=points,
             labels=features.labels,
             timepoints=features.timepoints,
@@ -537,7 +625,7 @@ class WRRandomAffine(WRBaseAugmentation):
             (k, _transform_affine(k, v, self._M)) for k, v in features.features.items()
         )
 
-        return WRFeatures(
+        return self.return_type(
             coords=points,
             labels=features.labels,
             timepoints=features.timepoints,
@@ -573,7 +661,7 @@ class WRRandomBrightness(WRBaseAugmentation):
                 v = v * scale + shift
             key_vals.append((k, v))
         feats = OrderedDict(key_vals)
-        return WRFeatures(
+        return self.return_type(
             coords=features.coords,
             labels=features.labels,
             timepoints=features.timepoints,
@@ -596,7 +684,7 @@ class WRRandomOffset(WRBaseAugmentation):
         offset = self._rng.uniform(*self.offset, features.coords.shape)
         coords = features.coords + offset
         
-        return WRFeatures(
+        return self.return_type(
             coords=coords,
             labels=features.labels,
             timepoints=features.timepoints,
@@ -620,7 +708,7 @@ class WRRandomMovement(WRBaseAugmentation):
         offset = (features.timepoints[:, None] - tmin) * base_offset[None]
         coords = features.coords + offset
         
-        return WRFeatures(
+        return self.return_type(
             coords=coords,
             labels=features.labels,
             timepoints=features.timepoints,
@@ -629,17 +717,23 @@ class WRRandomMovement(WRBaseAugmentation):
 
 
 class WRAugmentationPipeline:
-    def __init__(self, augmentations: Sequence[WRBaseAugmentation]):
+    def __init__(self, augmentations: Sequence[WRBaseAugmentation], return_type=None):
         self.augmentations = augmentations
+        self.return_type = return_type if return_type is not None else WRFeatures
+        logger.debug(f"Augmentation pipeline return type: {self.return_type}")
+        for aug in self.augmentations:
+            aug.return_type = self.return_type
 
     def __call__(self, feats: WRFeatures):
         # logger.debug(f"Applying {len(self.augmentations)} augmentations")
         for aug in self.augmentations:
             # logger.debug(f"Applying {aug.__class__.__name__} augmentation")
+            aug.return_type = self.return_type
+            # logger.debug(f"Augmentation return type: {aug.return_type}")
             feats = aug(feats)
         
         # logger.debug(f"Coords : {feats.coords}")
-            
+        
         return feats
 
 # Factory functions
@@ -660,7 +754,7 @@ class AugmentationFactory:
     }
 
     @staticmethod
-    def create_augmentation_pipeline(augment: int):
+    def create_augmentation_pipeline(augment: int, return_type: str = WRFeatures):
         if augment == 0:
             return None
         elif augment == 1:
@@ -672,7 +766,8 @@ class AugmentationFactory:
                     ),
                     # wrfeat.WRRandomBrightness(p=0.8, factor=(0.5, 2.0)),
                     # wrfeat.WRRandomOffset(p=0.8, offset=(-3, 3)),
-                ]
+                ],
+                return_type=return_type,
             )
         elif augment == 2:
             return WRAugmentationPipeline(
@@ -681,7 +776,8 @@ class AugmentationFactory:
                     WRRandomAffine(**AugmentationFactory.default_args["affine"]),
                     WRRandomBrightness(**AugmentationFactory.default_args["brightness"]),
                     WRRandomOffset(**AugmentationFactory.default_args["offset"]),
-                ]
+                ],
+                return_type=return_type,
             )
         elif augment == 3:
             return WRAugmentationPipeline(
@@ -697,17 +793,19 @@ class AugmentationFactory:
                     WRRandomBrightness(**AugmentationFactory.default_args["brightness"]),
                     WRRandomMovement(**AugmentationFactory.default_args["movement"]),
                     WRRandomOffset(**AugmentationFactory.default_args["offset"]),
-                ]
+                ],
+                return_type=return_type,
             )
         else:
             raise ValueError(f"Invalid augment level {augment}")
 
     @staticmethod
-    def create_cropper(crop_size: tuple[int], ndim: int):
+    def create_cropper(crop_size: tuple[int], ndim: int, return_type=WRFeatures):
         if crop_size is not None:
             return WRRandomCrop(
                 crop_size=crop_size,
                 ndim=ndim,
+                return_type=return_type,
             )
         return None
 
@@ -715,7 +813,7 @@ class AugmentationFactory:
 def get_features(
     detections: np.ndarray,
     imgs: np.ndarray | None = None,
-    features: Literal["none", "wrfeat", "pretrained_feats"] = "wrfeat",
+    features: Literal["none", "wrfeat", "pretrained_feats", "pretrained_feats_aug"] = "wrfeat",
     ndim: int = 2,
     n_workers=0,
     progbar_class=tqdm,
@@ -754,10 +852,10 @@ def get_features(
                     desc="Extracting features",
                 )
             )
-    elif features == "pretrained_feats":
-        feature_extractor.precompute_region_embeddings(imgs)
+    elif features == "pretrained_feats" or features == "pretrained_feats_aug":
+        feature_extractor.precompute_image_embeddings(imgs)
         features = [
-                    WRPretrainedFeatures.from_pretrained_features(
+                    WRPretrainedFeatures.from_mask_img(
                         img=img[np.newaxis], mask=mask[np.newaxis], feature_extractor=feature_extractor, t_start=t, additional_properties=feature_extractor.additional_features,
                     )
                     for t, (mask, img) in enumerate(zip(detections, imgs))
