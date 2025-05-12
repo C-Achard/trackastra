@@ -34,6 +34,14 @@ try:
 except ImportError:
     pass
 
+TARROW_AVAILABLE = False
+try:
+    from tarrow.models import TimeArrowNet
+    from tarrow.utils import normalize as tap_normalize
+    TARROW_AVAILABLE = True
+except ImportError:
+    pass
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -43,6 +51,7 @@ DinoV2Features = None
 SAMFeatures = None
 SAM2Features = None
 MicroSAMFeatures = None
+TArrowFeatures = None
 
 # Updated with actual class after each definition
 # See register_backbone decorator
@@ -63,7 +72,8 @@ PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.1
     "facebook/sam2.1-hiera-base-plus",  # 256
     "microsam/vit_b_lm",
     "microsam/vit_l_lm",
-    "random"
+    "random",
+    "weigertlab/tarrow" # arbitrary. default 32
 ]
 
 
@@ -329,6 +339,8 @@ class PretrainedAugmentations:
 class PretrainedFeatureExtractorConfig:
     """model_name (str):
         Specify the pretrained backbone to use.
+    model_path (str | Path):
+        Path to the pretrained model.
     save_path (str | Path):
         Specify the path to save the embeddings.
     batch_size (int):
@@ -349,6 +361,7 @@ class PretrainedFeatureExtractorConfig:
         Specify the path to the pickled PCA preprocessor. This is used to transform the features to a reduced PCA feature space.
     """
     model_name: PretrainedBackboneType
+    model_path: str | Path = None
     save_path: str | Path = None
     batch_size: int = 4
     mode: PretrainedFeatsExtractionMode = "nearest_patch"
@@ -365,7 +378,14 @@ class PretrainedFeatureExtractorConfig:
     def _check_model_availability(self):
         if self.model_name not in AVAILABLE_PRETRAINED_BACKBONES.keys():
             raise ValueError(f"Model {self.model_name} is not available for feature extraction.")
-        self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
+        if self.model_name == "weigertlab/tarrow":
+            if not TARROW_AVAILABLE:
+                raise ImportError("TArrow is not available. Please install it to use this model.")
+            elif model_path is None:
+                raise ValueError("Model path must be specified for TArrow.")
+            _, self.feat_dim = TArrowFeatures._load_model_from_path(self.model_path)
+        else:
+            self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
         if self.additional_features is not None:
             self.feat_dim += CTCData.FEATURES_DIMENSIONS[self.additional_features][2] + 1  # TODO if this ever accepts 3D data this will be incorrect
             # TODO also figure out why the dimensions require +1 to be correct
@@ -479,6 +499,11 @@ class FeatureExtractor(ABC):
     @property
     def model_name_path(self):
         return self.model_name.replace("/", "-")
+    
+    @staticmethod
+    def _load_model_from_path(self) -> tuple[torch.nn.Module, int]:
+        """Loads the model from the specified path. Returns the model and the model feature dimension (e.g. 256 for SAM2)."""
+        raise NotImplementedError("This model currently only supports being loaded from huggingface's hub.")
     
     @classmethod
     def from_model_name(cls, 
@@ -1349,6 +1374,55 @@ class MicroSAMFeatures(FeatureExtractor):
             out = out.unsqueeze(0)
         return out
 
+@register_backbone("weigertlab/tarrow", 32)
+class TArrowFeatures(FeatureExtractor):
+    model_name = "weigertlab/tarrow"
+
+    def __init__(
+        self,
+        model_folder: str,
+        image_size: tuple[int, int],
+        save_path: str | Path,
+        batch_size: int = 4,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        ):
+        super().__init__(image_size, save_path, batch_size, device, mode)
+        self.input_size = ...
+        self.final_grid_size = ...
+        self.n_channels = 1
+        
+        self.model_folder = model_folder
+        self.full_model, self.hidden_state_size = self._load_model_from_path(model_folder)
+        self.full_model.to(device)
+        AVAILABLE_PRETRAINED_BACKBONES["weigertlab/tarrow"]["feat_dim"] = self.hidden_state_size
+        self.model = self.full_model.backbone
+        
+        self.batch_return_type = "np.ndarray"
+        self.channel_first = False
+        self.rescale_batches = False
+    
+        # TODO clear full model from memory
+        
+    @staticmethod
+    def _load_model_from_path(model_folder: str):
+        """Loads the model from the folder."""
+        if not os.path.exists(model_folder):
+            raise FileNotFoundError(f"Model folder {model_folder} does not exist.")
+        model = TimeArrowNet.from_folder(model_folder)
+        feat_dim = model.bb_n_feat
+        return model, feat_dim
+        
+    def _prepare_batches(self, images):
+        images_batch = tap_normalize(images)
+        images_batch = torch.from_numpy(images_batch).to(torch.float32) # T, H, W
+        images_batch = images_batch.unsqueeze(1) # T, C, H, W
+        return images_batch
+
+    
+    def _run_model(self, images: np.ndarray) -> torch.Tensor:
+        """Extracts embeddings from the model."""
+        embs = self.model(images)
 
 @register_backbone("random", 256)
 class RandomFeatures(FeatureExtractor):
@@ -1379,6 +1453,7 @@ class RandomFeatures(FeatureExtractor):
         feats = torch.rand(len(images), self.final_grid_size**2, self.hidden_state_size, generator=self._generator).to(self.device)
         feats = feats * 4 - 2  # [-2, 2]
         return feats
+
 
 
 FeatureExtractor._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
