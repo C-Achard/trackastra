@@ -60,8 +60,10 @@ AVAILABLE_PRETRAINED_BACKBONES = {}
 PretrainedFeatsExtractionMode = Literal[
     # "exact_patch",  # Uses the image patch centered on the detection for embedding
     "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
-    "mean_patches",  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-    "max_patches"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
+    "mean_patches_bbox",  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection's bounding box
+    "mean_patches_exact",  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
+    "max_patches_bbox"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
+    "max_patches_exact"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
 ]
 
 PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.11 so it has to be copied
@@ -73,7 +75,7 @@ PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.1
     "microsam/vit_b_lm",
     "microsam/vit_l_lm",
     "random",
-    "weigertlab/tarrow" # arbitrary. default 32
+    "weigertlab/tarrow"  # arbitrary. default 32
 ]
 
 
@@ -122,7 +124,7 @@ def percentile_norm(b):
         b[i] = np.clip(b[i], 0, 1)
     return b
 
-# Augmentations for pre-trained models
+# Augmentations for pre-trained models ###
 
 
 from torchvision import tv_tensors
@@ -334,6 +336,8 @@ class PretrainedAugmentations:
             self.aug_record.update(aug.applied_record)
         return self.aug_record
 
+# Configs for pretrained models ###
+
 
 @dataclass
 class PretrainedFeatureExtractorConfig:
@@ -347,7 +351,7 @@ class PretrainedFeatureExtractorConfig:
         Specify the batch size to use for the model.
     mode (str):
         Specify the mode to use for the model.
-        Currently available modes are "nearest_patch", "mean_patches", and "max_patches".
+        Currently available modes are "nearest_patch", "mean_patches_bbox", "mean_patches_exact", "max_patches_bbox", "max_patches_exact".
     device (str):
         Specify the device to use for the model.
         If not set and "pretrained_feats" is used, the device is automatically set by default to "cuda", "mps" or "cpu" as available.
@@ -368,20 +372,31 @@ class PretrainedFeatureExtractorConfig:
     device: str | None = None
     feat_dim: int = None
     additional_features: str | None = None  # for regionprops features
+    n_augmented_copies: int = 0  # number of augmented copies to create
     pca_components: int = None  # for PCA reduction of the features
     pca_preprocessor_path: str | Path = None  # for PCA preprocessor path
     
     def __post_init__(self):
         self._guess_device()
+        self.model_path = self._check_path(self.model_path)
+        self.save_path = self._check_path(self.save_path)
+        self.pca_preprocessor_path = self._check_path(self.pca_preprocessor_path)
         self._check_model_availability()
         
+    def _check_path(self, path):
+        if path is not None and not isinstance(path, str | Path):
+            raise ValueError(f"Path must be a string or Path object, got {type(path)}.")
+        if isinstance(path, str):
+            return Path(path).resolve()
+        return path
+    
     def _check_model_availability(self):
         if self.model_name not in AVAILABLE_PRETRAINED_BACKBONES.keys():
             raise ValueError(f"Model {self.model_name} is not available for feature extraction.")
         if self.model_name == "weigertlab/tarrow":
             if not TARROW_AVAILABLE:
                 raise ImportError("TArrow is not available. Please install it to use this model.")
-            elif model_path is None:
+            elif self.model_path is None:
                 raise ValueError("Model path must be specified for TArrow.")
             _, self.feat_dim = TArrowFeatures._load_model_from_path(self.model_path)
         else:
@@ -422,7 +437,9 @@ class PretrainedFeatureExtractorConfig:
     @classmethod
     def from_dict(cls, config_dict):
         return cls(**config_dict)
-    
+
+# Feature extractors ###
+
 
 class FeatureExtractor(ABC):
     model_name = None
@@ -435,6 +452,7 @@ class FeatureExtractor(ABC):
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
         ):
         # Image processor extra args
         self.im_proc_kwargs = {
@@ -446,8 +464,8 @@ class FeatureExtractor(ABC):
         }
         # Model specs
         self.model = None
-        self._input_size: int = None
-        self._final_grid_size: int = None
+        self._input_size: int | tuple[int] = None
+        self._final_grid_size: int | tuple[int] = None
         self.n_channels: int = None
         self.hidden_state_size: int = None
         self.model_patch_size: int = None
@@ -458,7 +476,7 @@ class FeatureExtractor(ABC):
         self.percentile_norm = True
         self.rescale_batches = False
         self.channel_first = True
-        self.batch_return_type: Literal["list[np.ndarray]", "np.ndarray"] = "np.ndarray"
+        self.batch_return_type: Literal["list[np.ndarray]", "np.ndarray", "torch.Tensor"] = "np.ndarray"
         # Parameters for embedding extraction
         self.batch_size = batch_size
         self.device = device
@@ -481,9 +499,10 @@ class FeatureExtractor(ABC):
         return self._input_size
     
     @input_size.setter
-    def input_size(self, value: int):
-        if value is None:
-            raise ValueError("Input size cannot be None.")
+    def input_size(self, value: int | tuple[int]):
+        if isinstance(value, tuple):
+            if len(value) != 2:
+                raise ValueError("Input size must be a tuple of length 2.")
         self._input_size = value
         self._set_model_patch_size()
         
@@ -492,7 +511,7 @@ class FeatureExtractor(ABC):
         return self._final_grid_size
     
     @final_grid_size.setter
-    def final_grid_size(self, value: int):
+    def final_grid_size(self, value: int | tuple[int]):
         self._final_grid_size = value
         self._set_model_patch_size()
         
@@ -513,7 +532,7 @@ class FeatureExtractor(ABC):
                         device: torch.device = "cuda" if torch.cuda.is_available() else "cpu",
                         mode="nearest_patch",
                         additional_features=None,
-                        # mode="mean_patches"
+                        model_folder=None,
                         ):
         cls._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
         if model_name not in cls._available_backbones:
@@ -521,29 +540,38 @@ class FeatureExtractor(ABC):
         logger.info(f"Using model {model_name} with mode {mode} for pretrained feature extraction.")
         backbone = cls._available_backbones[model_name]["class"]
         backbone.model_name = model_name
-        model = backbone(image_shape, save_path, device=device, mode=mode)
+        model = backbone(
+            image_shape,
+            save_path, 
+            device=device, 
+            mode=mode,
+            model_folder=model_folder,
+            )
         model.additional_features = additional_features
         return model
         
     @classmethod
-    def from_config(cls, config: PretrainedFeatureExtractorConfig, image_shape: tuple[int, int], save_path: str | Path):
+    def from_config(cls, config: PretrainedFeatureExtractorConfig, image_shape: tuple[int, int], save_path: str | Path | None = None):
         cls._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
         if config.model_name not in cls._available_backbones:
             raise ValueError(f"Model {config.model_name} is not available for feature extraction.")
         logger.info(f"Using model {config.model_name} with mode {config.mode} for pretrained feature extraction.")
         backbone = cls._available_backbones[config.model_name]["class"]
         backbone.model_name = config.model_name
-        backbone.additional_features = config.additional_features
         
-        return backbone(
-            image_shape, 
-            save_path, 
+        model = backbone(
+            image_size=image_shape, 
+            save_path=save_path if save_path is not None else config.save_path,
             batch_size=config.batch_size, 
             device=config.device, 
             mode=config.mode,
-            n_augmented_copies=config.n_augmented_copies,
-            aug_pipeline=PretrainedAugmentations() if config.n_augmented_copies > 0 else None,
+            additional_features=config.additional_features,
+            model_folder=config.model_path,
+            # n_augmented_copies=config.n_augmented_copies,
+            # aug_pipeline=PretrainedAugmentations() if config.n_augmented_copies > 0 else None,
         )
+        model.additional_features = config.additional_features
+        return model
         
     def clear_model(self):
         """Clears the model from memory."""
@@ -556,10 +584,20 @@ class FeatureExtractor(ABC):
             logger.warning("No model to clear from memory.")
     
     def _set_model_patch_size(self):
-        if self.final_grid_size is not None and self.input_size is not None:
-            self.model_patch_size = self.input_size // self.final_grid_size
-            # if not self.input_size % self.final_grid_size == 0:
-            # raise ValueError("The input size must be divisible by the final grid size.")
+        if isinstance(self.final_grid_size, tuple):
+            if not isinstance(self.input_size, tuple):
+                raise ValueError("Input size must be a tuple of ints.")
+            self.model_patch_size = (
+                self.input_size[0] // self.final_grid_size[0],
+                self.input_size[1] // self.final_grid_size[1],
+            )
+        elif isinstance(self.final_grid_size, int):
+            if self.final_grid_size is not None and self.input_size is not None:
+                self.model_patch_size = self.input_size // self.final_grid_size
+                # if not self.input_size % self.final_grid_size == 0:
+                # raise ValueError("The input size must be divisible by the final grid size.")
+        else:
+            raise ValueError("Final grid size must be an int or a tuple of ints.")
 
     def compute_region_features(
             self, 
@@ -578,18 +616,23 @@ class FeatureExtractor(ABC):
         """
         feats = torch.zeros(len(coords), self.hidden_state_size, device=self.device)
         
-        if self.mode == "nearest_patch":
-            feats = self._nearest_patches(coords, masks)  
-        elif self.mode == "mean_patches":
-            if masks is None or labels is None or timepoints is None:
-                raise ValueError("Masks and labels must be provided for mean patch mode.")
-            feats = self._agg_patches(masks, timepoints, labels)
-        elif self.mode == "max_patches":
-            if masks is None or labels is None or timepoints is None:
-                raise ValueError("Masks and labels must be provided for max patch mode.")
-            feats = self._agg_patches(masks, timepoints, labels, agg=torch.max)
-        else:
-            raise NotImplementedError(f"Mode {self.mode} is not implemented.")
+        match self.mode:
+            case "nearest_patch":
+                feats = self._nearest_patches(coords, masks)
+            case "mean_patches_bbox" | "mean_patches_exact" | "max_patches_bbox" | "max_patches_exact":
+                if masks is None or labels is None or timepoints is None:
+                    raise ValueError("Masks and labels must be provided for the chosen patch mode.")
+                match self.mode:
+                    case "mean_patches_bbox":
+                        feats = self._agg_patches_bbox(masks, timepoints, labels)
+                    case "mean_patches_exact":
+                        feats = self._agg_patches_exact(masks, timepoints, labels)
+                    case "max_patches_bbox":
+                        feats = self._agg_patches_bbox(masks, timepoints, labels, agg=torch.max)
+                    case "max_patches_exact":
+                        feats = self._agg_patches_exact(masks, timepoints, labels, agg=torch.max)
+            case _:
+                raise NotImplementedError(f"Mode {self.mode} is not implemented.")
         
         assert feats.shape == (len(coords), self.hidden_state_size)
         return feats  # (n_regions, embedding_size)
@@ -597,7 +640,10 @@ class FeatureExtractor(ABC):
     def precompute_image_embeddings(self, images):  # , windows, window_size):
         """Precomputes embeddings for all images."""
         missing = self._check_missing_embeddings()
-        all_embeddings = torch.zeros(len(images), self.final_grid_size**2, self.hidden_state_size, device=self.device)
+        if isinstance(self.final_grid_size, int):
+            all_embeddings = torch.zeros(len(images), self.final_grid_size**2, self.hidden_state_size, device=self.device)
+        elif isinstance(self.final_grid_size, tuple):
+            all_embeddings = torch.zeros(len(images), self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size, device=self.device)
         if missing:
             for ts, batches in tqdm(self._prepare_batches(images), total=len(images) // self.batch_size, desc="Computing embeddings"):
                 embeddings = self._run_model(batches)
@@ -628,7 +674,7 @@ class FeatureExtractor(ABC):
     def extract_embedding(self, masks, timepoints, labels, coords):
         if masks.shape[-2:] != self.orig_image_size:
             # This should not be occur since each folder is loaded as a separate CTCData
-            logger.debug(f"Input shape change detected: {masks.shape[-2:]} from {self.orig_image_size}.")
+            logger.warning(f"Input shape change detected: {masks.shape[-2:]} from {self.orig_image_size}.")
             self.orig_image_size = masks.shape[-2:]
         n_regions_per_frame = np.unique(timepoints, return_counts=True)[1]
         tot_regions = n_regions_per_frame.sum()
@@ -680,8 +726,14 @@ class FeatureExtractor(ABC):
             yield timepoints, batch
     
     def _map_coords_to_model_grid(self, coords):
-        scale_x = self.input_size / self.orig_image_size[0]
-        scale_y = self.input_size / self.orig_image_size[1]
+        if isinstance(self.input_size, tuple):
+            scale_x = self.input_size[0] / self.orig_image_size[0]
+            scale_y = self.input_size[1] / self.orig_image_size[1]
+        elif isinstance(self.input_size, int):
+            scale_x = self.input_size / self.orig_image_size[0]
+            scale_y = self.input_size / self.orig_image_size[1]
+        else:
+            raise ValueError("Input size must be an int or a tuple of ints.")
         coords = np.array(coords)
         patch_x = (coords[:, 1] * scale_x).astype(int)
         patch_y = (coords[:, 2] * scale_y).astype(int)
@@ -689,8 +741,14 @@ class FeatureExtractor(ABC):
         return patch_coords
     
     def _find_nearest_cell(self, patch_coords):
-        x_idxs = patch_coords[:, 1] // self.model_patch_size
-        y_idxs = patch_coords[:, 2] // self.model_patch_size
+        if isinstance(self.model_patch_size, tuple):
+            x_idxs = patch_coords[:, 1] // self.model_patch_size[0]
+            y_idxs = patch_coords[:, 2] // self.model_patch_size[1]
+        elif isinstance(self.model_patch_size, int):
+            x_idxs = patch_coords[:, 1] // self.model_patch_size
+            y_idxs = patch_coords[:, 2] // self.model_patch_size
+        else:
+            raise ValueError("Model patch size must be an int or a tuple of ints.")
         patch_idxs = np.column_stack((patch_coords[:, 0], x_idxs, y_idxs)).astype(int)
         return patch_idxs
     
@@ -731,7 +789,11 @@ class FeatureExtractor(ABC):
         Returns:
         - mask_patches (dict): Dictionary with region labels as keys and lists of patch indices as values.
         """
-        patch_height, patch_width = image_mask.shape[0] // self.final_grid_size, image_mask.shape[1] // self.final_grid_size
+        if isinstance(self.final_grid_size, tuple):
+            patch_height = image_mask.shape[0] // self.final_grid_size[0]
+            patch_width = image_mask.shape[1] // self.final_grid_size[1]
+        else:
+            patch_height, patch_width = image_mask.shape[0] // self.final_grid_size, image_mask.shape[1] // self.final_grid_size
         regions = regionprops(image_mask)
         return self._find_bbox_cells(regions, patch_height, patch_width)
     
@@ -739,7 +801,11 @@ class FeatureExtractor(ABC):
         import napari
         v = napari.Viewer()
         # v.add_labels(masks)
-        e = embeddings.detach().cpu().numpy().swapaxes(1, 2).reshape(-1, self.hidden_state_size, self.final_grid_size, self.final_grid_size).swapaxes(0, 1)
+        e = embeddings.detach().cpu().numpy().swapaxes(1, 2)
+        if isinstance(self.final_grid_size, tuple):
+            e = e.reshape(-1, self.hidden_state_size, self.final_grid_size[0], self.final_grid_size[1]).swapaxes(0, 1)
+        else:
+            e = e.reshape(-1, self.hidden_state_size, self.final_grid_size, self.final_grid_size).swapaxes(0, 1)
         v.add_image(
             e,
             name="Embeddings",
@@ -753,7 +819,10 @@ class FeatureExtractor(ABC):
         v.add_points(points, size=1, face_color='red', name='Patch Indices')
 
         from skimage.transform import resize
-        masks_resized = resize(masks[0], (self.final_grid_size, self.final_grid_size), anti_aliasing=False, order=0, preserve_range=True)
+        if isinstance(self.final_grid_size, tuple):
+            masks_resized = resize(masks[0], (self.final_grid_size[0], self.final_grid_size[1]), anti_aliasing=False, order=0, preserve_range=True)
+        else:
+            masks_resized = resize(masks[0], (self.final_grid_size, self.final_grid_size), anti_aliasing=False, order=0, preserve_range=True)
         v.add_labels(masks_resized)
         
         napari.run()
@@ -767,13 +836,16 @@ class FeatureExtractor(ABC):
 
         # load the embeddings and extract the relevant ones
         feats = torch.zeros(len(coords), self.hidden_state_size, device=self.device)
-        indices = [y * self.final_grid_size + x for _, y, x in patch_idxs]
+        if isinstance(self.final_grid_size, tuple):
+            indices = [y * self.final_grid_size[1] + x for _, y, x in patch_idxs]
+        else:
+            indices = [y * self.final_grid_size + x for _, y, x in patch_idxs]
         
         unique_timepoints = list(set(t for t, _, _ in patch_idxs))
         # logger.debug(f"Unique timepoints: {unique_timepoints}")
         embeddings = self._load_features()
         
-        # t = coords[0][0]
+        t = coords[0][0]
         # if t > 80:
         #    self._debug_show_patches(embeddings, masks, coords, patch_idxs)
 
@@ -791,7 +863,7 @@ class FeatureExtractor(ABC):
         return feats
     
     # @average_time_decorator
-    def _agg_patches(self, masks, timepoints, labels, agg=torch.mean):
+    def _agg_patches_bbox(self, masks, timepoints, labels, agg=torch.mean):
         """Averages the embeddings of all patches that intersect with the detection.
         
         Args:
@@ -830,6 +902,57 @@ class FeatureExtractor(ABC):
                 aggregated = aggregated.values
             return aggregated
         
+        res = joblib.Parallel(n_jobs=8, backend="threading")(
+            joblib.delayed(process_region)(i, t) for i, t in enumerate(timepoints_shifted)
+        )
+
+        for i, r in enumerate(res):
+            feats[i] = r
+
+        return feats
+    
+    def _agg_patches_exact(self, masks, timepoints, labels, agg_fn=torch.mean):
+        """Averages the embeddings of all patches that strictly belong to the mask.
+
+        Args:
+            - masks (np.ndarray): Masks where each region has a unique label (t x H x W).
+            - timepoints (np.ndarray): For each region, contains the corresponding timepoint. (n_regions)
+            - labels (np.ndarray): Unique labels of the regions. (n_regions)
+            - agg_fn (callable): Aggregation function to use for averaging the embeddings. Default is torch.mean.
+        """
+        try:
+            n_regions = len(timepoints)
+            timepoints_shifted = timepoints - timepoints.min()
+        except ValueError:
+            logger.error("Error: issue computing shifted timepoints.")
+            logger.error(f"Regions: {len(timepoints)}")
+            logger.error(f"Timepoints: {timepoints}")
+            return torch.zeros(n_regions, self.hidden_state_size, device=self.device)
+
+        feats = torch.zeros(n_regions, self.hidden_state_size, device=self.device)
+        embeddings = self._load_features()
+
+        def process_region(i, t):
+            # Extract the mask for the specific region
+            region_mask = masks[t] == labels[i]
+            if not np.any(region_mask):
+                logger.warning(f"No pixels found for region {labels[i]} at timepoint {t}.")
+                return torch.zeros(self.hidden_state_size, device=self.device)
+
+            # Map the mask pixels to the embedding grid
+            patch_coords = np.argwhere(region_mask)  # Get (row, col) indices of mask pixels
+            scale_x = self.final_grid_size[0] / masks.shape[-2]
+            scale_y = self.final_grid_size[1] / masks.shape[-1]
+            patch_x = (patch_coords[:, 1] * scale_x).astype(int)
+            patch_y = (patch_coords[:, 0] * scale_y).astype(int)
+
+            # Extract embeddings for the mask pixels
+            patch_indices = patch_y * self.final_grid_size[1] + patch_x
+            patch_embeddings = embeddings[t][patch_indices]
+
+            # Compute the mean of the embeddings
+            return agg_fn(patch_embeddings, dim=0)
+
         res = joblib.Parallel(n_jobs=8, backend="threading")(
             joblib.delayed(process_region)(i, t) for i, t in enumerate(timepoints_shifted)
         )
@@ -1157,8 +1280,9 @@ class HieraFeatures(FeatureExtractor):
         batch_size: int = 16,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
         ):
-        super().__init__(image_size, save_path, batch_size, device, mode)
+        super().__init__(image_size, save_path, batch_size, device, mode, **kwargs)
         # self.input_size = 224
         self.input_mul = 3
         self.input_size = self.input_mul * 224
@@ -1206,6 +1330,7 @@ class DinoV2Features(FeatureExtractor):
         batch_size: int = 16,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 224
@@ -1251,6 +1376,7 @@ class SAMFeatures(FeatureExtractor):
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 1024
@@ -1283,6 +1409,7 @@ class SAM2Features(FeatureExtractor):
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 1024
@@ -1344,6 +1471,7 @@ class MicroSAMFeatures(FeatureExtractor):
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
         ):
         if not MICRO_SAM_AVAILABLE:
             raise ImportError("microSAM is not available. Please install it following the instructions in the documentation.")
@@ -1374,6 +1502,7 @@ class MicroSAMFeatures(FeatureExtractor):
             out = out.unsqueeze(0)
         return out
 
+
 @register_backbone("weigertlab/tarrow", 32)
 class TArrowFeatures(FeatureExtractor):
     model_name = "weigertlab/tarrow"
@@ -1383,22 +1512,24 @@ class TArrowFeatures(FeatureExtractor):
         model_folder: str,
         image_size: tuple[int, int],
         save_path: str | Path,
-        batch_size: int = 4,
+        batch_size: int = 2,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
-        self.input_size = ...
-        self.final_grid_size = ...
+        self._final_grid_size = (self.orig_image_size[0], self.orig_image_size[1])  
+        self.input_size = self.final_grid_size
         self.n_channels = 1
         
         self.model_folder = model_folder
         self.full_model, self.hidden_state_size = self._load_model_from_path(model_folder)
         self.full_model.to(device)
+        self.full_model.eval()
         AVAILABLE_PRETRAINED_BACKBONES["weigertlab/tarrow"]["feat_dim"] = self.hidden_state_size
         self.model = self.full_model.backbone
         
-        self.batch_return_type = "np.ndarray"
+        self.batch_return_type = "torch.Tensor"
         self.channel_first = False
         self.rescale_batches = False
     
@@ -1409,20 +1540,47 @@ class TArrowFeatures(FeatureExtractor):
         """Loads the model from the folder."""
         if not os.path.exists(model_folder):
             raise FileNotFoundError(f"Model folder {model_folder} does not exist.")
-        model = TimeArrowNet.from_folder(model_folder)
+        model = TimeArrowNet.from_folder(model_folder, from_state_dict=True)
         feat_dim = model.bb_n_feat
         return model, feat_dim
         
     def _prepare_batches(self, images):
         images_batch = tap_normalize(images)
-        images_batch = torch.from_numpy(images_batch).to(torch.float32) # T, H, W
-        images_batch = images_batch.unsqueeze(1) # T, C, H, W
+        images_batch = torch.from_numpy(images_batch).to(torch.float32)  # T, H, W
+        images_batch = images_batch.unsqueeze(1)  # T, C, H, W
         return images_batch
 
-    
-    def _run_model(self, images: np.ndarray) -> torch.Tensor:
+    def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
         """Extracts embeddings from the model."""
-        embs = self.model(images)
+        features = []
+        with torch.no_grad():
+            for i in tqdm(range(0, len(images), self.batch_size)):
+                batch = images[i : i + self.batch_size]
+                batch = batch.to(self.device)
+                out = self.model(batch)
+                features.append(out)
+        
+        features = torch.cat(features, dim=0).cpu()
+        
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+        
+        features = features.moveaxis(1, 3)  # (T, H, W, N)
+        features = features.reshape(-1, self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size)  # (T, grid_size**2, N)
+        return features
+    
+    def precompute_image_embeddings(self, images):
+        # missing = self._check_missing_embeddings()
+        batches = self._prepare_batches(images)
+        self.embeddings = self._run_model(batches)
+        # self._save_features(self.embeddings)
+        return self.embeddings
+    
+    def compute_region_features(self, coords, masks=None, timepoints=None, labels=None):
+        features = super().compute_region_features(coords, masks, timepoints, labels)
+        self.embeddings = None
+        return features
+
 
 @register_backbone("random", 256)
 class RandomFeatures(FeatureExtractor):
@@ -1435,6 +1593,7 @@ class RandomFeatures(FeatureExtractor):
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 1024
@@ -1453,7 +1612,6 @@ class RandomFeatures(FeatureExtractor):
         feats = torch.rand(len(images), self.final_grid_size**2, self.hidden_state_size, generator=self._generator).to(self.device)
         feats = feats * 4 - 2  # [-2, 2]
         return feats
-
 
 
 FeatureExtractor._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
