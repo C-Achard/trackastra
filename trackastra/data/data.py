@@ -1495,7 +1495,7 @@ class CTCData(Dataset):
 class CTCDataAugPretrainedFeats(CTCData):
     """CTCData with pretrained features."""
 
-    def __init__(self, pretrained_n_augmentations: int = 3, force_recompute=True, *args, **kwargs):
+    def __init__(self, pretrained_n_augmentations: int = 3, force_recompute=False, *args, **kwargs):
         """Args:
         root (str):
             Folder containing the CTC TRA folder.

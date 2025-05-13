@@ -869,6 +869,7 @@ def train(args):
             mode=args.pretrained_feats_mode,
             save_path=emb_save_path,
             additional_features=args.pretrained_feats_additional_props,
+            model_path=args.pretrained_model_path,
             # pca_components=args.pretrained_feats_pca_ncomp,
             # pca_preprocessor_path=pca_save_path,
         )
@@ -1315,9 +1316,15 @@ def parse_train_args():
         help="If mode is pretrained_feats, specify the model to use for feature extraction",
     )
     parser.add_argument(
+        "--pretrained_model_path",
+        type=str,
+        default=None,
+        help="Path to pretrained model to use for feature extraction. Only valid if features is pretrained_feats.",
+    )
+    parser.add_argument(
         "--pretrained_feats_mode",
         type=str,
-        choices=["nearest_patch", "mean_patches_bbox", "max_patches_bbox"],
+        choices=["nearest_patch", "mean_patches_bbox", "max_patches_bbox", "mean_patches_exact", "max_patches_exact"],
         default=None,
         help="If mode is pretrained_feats, specify the mode to use for feature extraction",
     )

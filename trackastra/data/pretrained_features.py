@@ -914,21 +914,25 @@ class FeatureExtractor(ABC):
 
         def process_region(i, t):
             # Extract the mask for the specific region
-            region_mask = masks[t] == labels[i]
-            if not np.any(region_mask):
-                logger.warning(f"No pixels found for region {labels[i]} at timepoint {t}.")
-                return torch.zeros(self.hidden_state_size, device=self.device)
+            try:
+                region_mask = masks[t] == labels[i]
+                if not np.any(region_mask):
+                    logger.warning(f"No pixels found for region {labels[i]} at timepoint {t}.")
+                    return torch.zeros(self.hidden_state_size, device=self.device)
 
-            # Map the mask pixels to the embedding grid
-            patch_coords = np.argwhere(region_mask)  # Get (row, col) indices of mask pixels
-            scale_x = self.final_grid_size[0] / masks.shape[-2]
-            scale_y = self.final_grid_size[1] / masks.shape[-1]
-            patch_x = (patch_coords[:, 1] * scale_x).astype(int)
-            patch_y = (patch_coords[:, 0] * scale_y).astype(int)
+                # Map the mask pixels to the embedding grid
+                patch_coords = np.argwhere(region_mask)  # Get (row, col) indices of mask pixels
+                scale_x = self.final_grid_size[0] / masks.shape[-2]
+                scale_y = self.final_grid_size[1] / masks.shape[-1]
+                patch_x = (patch_coords[:, 1] * scale_x).astype(int)
+                patch_y = (patch_coords[:, 0] * scale_y).astype(int)
 
-            # Extract embeddings for the mask pixels
-            patch_indices = patch_y * self.final_grid_size[1] + patch_x
-            patch_embeddings = embeddings[t][patch_indices]
+                # Extract embeddings for the mask pixels
+                patch_indices = patch_y * self.final_grid_size[1] + patch_x
+                patch_embeddings = embeddings[t][patch_indices]
+            except IndexError as e:
+                breakpoint()
+                raise e
 
             # Compute the mean of the embeddings
             return agg_fn(patch_embeddings, dim=0)
@@ -1080,6 +1084,8 @@ class FeatureExtractorAugWrapper:
         im_shape, masks_shape = aug_images.shape, aug_masks.shape
         assert im_shape == masks_shape, f"Augmented images shape {im_shape} does not match augmented masks shape {masks_shape}."
         if im_shape[-2:] != self.extractor.orig_image_size:
+            if isinstance(self.extractor, TAPFeatures):
+                self.extractor.final_grid_size = (im_shape[-2], im_shape[-1])
             self.extractor.orig_image_size = im_shape[-2:]
             
         aug_feat_dict = self._compute(aug_images, aug_masks)
