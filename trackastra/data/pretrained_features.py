@@ -51,7 +51,7 @@ DinoV2Features = None
 SAMFeatures = None
 SAM2Features = None
 MicroSAMFeatures = None
-TArrowFeatures = None
+TAPFeatures = None
 
 # Updated with actual class after each definition
 # See register_backbone decorator
@@ -398,7 +398,7 @@ class PretrainedFeatureExtractorConfig:
                 raise ImportError("TArrow is not available. Please install it to use this model.")
             elif self.model_path is None:
                 raise ValueError("Model path must be specified for TArrow.")
-            _, self.feat_dim = TArrowFeatures._load_model_from_path(self.model_path)
+            _, self.feat_dim = TAPFeatures._load_model_from_path(self.model_path)
         else:
             self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
         if self.additional_features is not None:
@@ -464,8 +464,8 @@ class FeatureExtractor(ABC):
         }
         # Model specs
         self.model = None
-        self._input_size: int | tuple[int] = None
-        self._final_grid_size: int | tuple[int] = None
+        self._input_size: tuple[int] = None
+        self._final_grid_size: tuple[int] = None
         self.n_channels: int = None
         self.hidden_state_size: int = None
         self.model_patch_size: int = None
@@ -500,9 +500,13 @@ class FeatureExtractor(ABC):
     
     @input_size.setter
     def input_size(self, value: int | tuple[int]):
-        if isinstance(value, tuple):
+        if isinstance(value, int):
+            value = (value, value)
+        elif isinstance(value, tuple):
             if len(value) != 2:
                 raise ValueError("Input size must be a tuple of length 2.")
+        else:
+            raise ValueError("Input size must be an int or a tuple of ints.")
         self._input_size = value
         self._set_model_patch_size()
         
@@ -512,6 +516,13 @@ class FeatureExtractor(ABC):
     
     @final_grid_size.setter
     def final_grid_size(self, value: int | tuple[int]):
+        if isinstance(value, int):
+            value = (value, value)
+        elif isinstance(value, tuple):
+            if len(value) != 2:
+                raise ValueError("Final grid size must be a tuple of length 2.")
+        else:
+            raise ValueError("Final grid size must be an int or a tuple of ints.")
         self._final_grid_size = value
         self._set_model_patch_size()
         
@@ -584,20 +595,15 @@ class FeatureExtractor(ABC):
             logger.warning("No model to clear from memory.")
     
     def _set_model_patch_size(self):
-        if isinstance(self.final_grid_size, tuple):
+        if self.final_grid_size is None or self.input_size is None:
+            self.model_patch_size = None
+        else:
             if not isinstance(self.input_size, tuple):
                 raise ValueError("Input size must be a tuple of ints.")
             self.model_patch_size = (
                 self.input_size[0] // self.final_grid_size[0],
                 self.input_size[1] // self.final_grid_size[1],
             )
-        elif isinstance(self.final_grid_size, int):
-            if self.final_grid_size is not None and self.input_size is not None:
-                self.model_patch_size = self.input_size // self.final_grid_size
-                # if not self.input_size % self.final_grid_size == 0:
-                # raise ValueError("The input size must be divisible by the final grid size.")
-        else:
-            raise ValueError("Final grid size must be an int or a tuple of ints.")
 
     def compute_region_features(
             self, 
@@ -640,10 +646,7 @@ class FeatureExtractor(ABC):
     def precompute_image_embeddings(self, images):  # , windows, window_size):
         """Precomputes embeddings for all images."""
         missing = self._check_missing_embeddings()
-        if isinstance(self.final_grid_size, int):
-            all_embeddings = torch.zeros(len(images), self.final_grid_size**2, self.hidden_state_size, device=self.device)
-        elif isinstance(self.final_grid_size, tuple):
-            all_embeddings = torch.zeros(len(images), self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size, device=self.device)
+        all_embeddings = torch.zeros(len(images), self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size, device=self.device)
         if missing:
             for ts, batches in tqdm(self._prepare_batches(images), total=len(images) // self.batch_size, desc="Computing embeddings"):
                 embeddings = self._run_model(batches)
@@ -726,14 +729,8 @@ class FeatureExtractor(ABC):
             yield timepoints, batch
     
     def _map_coords_to_model_grid(self, coords):
-        if isinstance(self.input_size, tuple):
-            scale_x = self.input_size[0] / self.orig_image_size[0]
-            scale_y = self.input_size[1] / self.orig_image_size[1]
-        elif isinstance(self.input_size, int):
-            scale_x = self.input_size / self.orig_image_size[0]
-            scale_y = self.input_size / self.orig_image_size[1]
-        else:
-            raise ValueError("Input size must be an int or a tuple of ints.")
+        scale_x = self.input_size[0] / self.orig_image_size[0]
+        scale_y = self.input_size[1] / self.orig_image_size[1]
         coords = np.array(coords)
         patch_x = (coords[:, 1] * scale_x).astype(int)
         patch_y = (coords[:, 2] * scale_y).astype(int)
@@ -741,14 +738,8 @@ class FeatureExtractor(ABC):
         return patch_coords
     
     def _find_nearest_cell(self, patch_coords):
-        if isinstance(self.model_patch_size, tuple):
-            x_idxs = patch_coords[:, 1] // self.model_patch_size[0]
-            y_idxs = patch_coords[:, 2] // self.model_patch_size[1]
-        elif isinstance(self.model_patch_size, int):
-            x_idxs = patch_coords[:, 1] // self.model_patch_size
-            y_idxs = patch_coords[:, 2] // self.model_patch_size
-        else:
-            raise ValueError("Model patch size must be an int or a tuple of ints.")
+        x_idxs = patch_coords[:, 1] // self.model_patch_size[0]
+        y_idxs = patch_coords[:, 2] // self.model_patch_size[1]
         patch_idxs = np.column_stack((patch_coords[:, 0], x_idxs, y_idxs)).astype(int)
         return patch_idxs
     
@@ -789,11 +780,8 @@ class FeatureExtractor(ABC):
         Returns:
         - mask_patches (dict): Dictionary with region labels as keys and lists of patch indices as values.
         """
-        if isinstance(self.final_grid_size, tuple):
-            patch_height = image_mask.shape[0] // self.final_grid_size[0]
-            patch_width = image_mask.shape[1] // self.final_grid_size[1]
-        else:
-            patch_height, patch_width = image_mask.shape[0] // self.final_grid_size, image_mask.shape[1] // self.final_grid_size
+        patch_height = image_mask.shape[0] // self.final_grid_size[0]
+        patch_width = image_mask.shape[1] // self.final_grid_size[1]
         regions = regionprops(image_mask)
         return self._find_bbox_cells(regions, patch_height, patch_width)
     
@@ -802,10 +790,8 @@ class FeatureExtractor(ABC):
         v = napari.Viewer()
         # v.add_labels(masks)
         e = embeddings.detach().cpu().numpy().swapaxes(1, 2)
-        if isinstance(self.final_grid_size, tuple):
-            e = e.reshape(-1, self.hidden_state_size, self.final_grid_size[0], self.final_grid_size[1]).swapaxes(0, 1)
-        else:
-            e = e.reshape(-1, self.hidden_state_size, self.final_grid_size, self.final_grid_size).swapaxes(0, 1)
+        e = e.reshape(-1, self.hidden_state_size, self.final_grid_size[0], self.final_grid_size[1]).swapaxes(0, 1)
+
         v.add_image(
             e,
             name="Embeddings",
@@ -819,10 +805,7 @@ class FeatureExtractor(ABC):
         v.add_points(points, size=1, face_color='red', name='Patch Indices')
 
         from skimage.transform import resize
-        if isinstance(self.final_grid_size, tuple):
-            masks_resized = resize(masks[0], (self.final_grid_size[0], self.final_grid_size[1]), anti_aliasing=False, order=0, preserve_range=True)
-        else:
-            masks_resized = resize(masks[0], (self.final_grid_size, self.final_grid_size), anti_aliasing=False, order=0, preserve_range=True)
+        masks_resized = resize(masks[0], (self.final_grid_size[0], self.final_grid_size[1]), anti_aliasing=False, order=0, preserve_range=True)
         v.add_labels(masks_resized)
         
         napari.run()
@@ -836,11 +819,7 @@ class FeatureExtractor(ABC):
 
         # load the embeddings and extract the relevant ones
         feats = torch.zeros(len(coords), self.hidden_state_size, device=self.device)
-        if isinstance(self.final_grid_size, tuple):
-            indices = [y * self.final_grid_size[1] + x for _, y, x in patch_idxs]
-        else:
-            indices = [y * self.final_grid_size + x for _, y, x in patch_idxs]
-        
+        indices = [y * self.final_grid_size[1] + x for _, y, x in patch_idxs]
         unique_timepoints = list(set(t for t, _, _ in patch_idxs))
         # logger.debug(f"Unique timepoints: {unique_timepoints}")
         embeddings = self._load_features()
@@ -895,7 +874,8 @@ class FeatureExtractor(ABC):
         def process_region(i, t):
             patches_feats = []
             for patch in patches[t][labels[i]]:
-                patches_feats.append(embeddings[t][patch[1] * self.final_grid_size + patch[0]])
+                embs = embeddings[t][patch[1] * self.final_grid_size[1] + patch[0]]
+                patches_feats.append(embs)
             aggregated = agg(torch.stack(patches_feats), dim=0)
             # If agg is torch.max, extract only the values
             if isinstance(aggregated, torch.return_types.max):
@@ -987,7 +967,7 @@ class FeatureExtractor(ABC):
                 if np.any(np.isnan(features)): 
                     raise RuntimeError(f"NaN values found in features loaded from {load_path}.")
                 # check feature shape consistency
-                if features.shape[1] != self.final_grid_size**2 or features.shape[2] != self.hidden_state_size:
+                if features.shape[1] != self.final_grid_size[0] * self.final_grid_size[1] or features.shape[2] != self.hidden_state_size:
                     logger.error(f"Saved embeddings found, but shape {features.shape} does not match expected shape {('n_frames', self.final_grid_size**2, self.hidden_state_size)}.")
                     logger.error("Embeddings will be recomputed.")
                     return None
@@ -1285,8 +1265,8 @@ class HieraFeatures(FeatureExtractor):
         super().__init__(image_size, save_path, batch_size, device, mode, **kwargs)
         # self.input_size = 224
         self.input_mul = 3
-        self.input_size = self.input_mul * 224
-        self.final_grid_size = 7 * self.input_mul  # 14x14 grid
+        self.input_size = int(self.input_mul * 224)
+        self.final_grid_size = int(7 * self.input_mul)  # 14x14 grid
         self.n_channels = 3
         self.hidden_state_size = 768
         self.rescale_batches = False
@@ -1296,7 +1276,7 @@ class HieraFeatures(FeatureExtractor):
         ##
         self.image_processor = AutoImageProcessor.from_pretrained(self.model_name)
         config = HieraConfig.from_pretrained(self.model_name)
-        config.image_size = [self.input_size, self.input_size]
+        config.image_size = [self.input_size[0], self.input_size[1]]
         # logger.debug(f"Config: {config}")
         # self.model = HieraModel.from_pretrained(self.model_name)
         # self.model.config.image_size = [self.input_size, self.input_size]
@@ -1504,7 +1484,7 @@ class MicroSAMFeatures(FeatureExtractor):
 
 
 @register_backbone("weigertlab/tarrow", 32)
-class TArrowFeatures(FeatureExtractor):
+class TAPFeatures(FeatureExtractor):
     model_name = "weigertlab/tarrow"
 
     def __init__(
@@ -1554,7 +1534,7 @@ class TArrowFeatures(FeatureExtractor):
         """Extracts embeddings from the model."""
         features = []
         with torch.no_grad():
-            for i in tqdm(range(0, len(images), self.batch_size)):
+            for i in tqdm(range(0, len(images), self.batch_size), desc="Computing TAP features"):
                 batch = images[i : i + self.batch_size]
                 batch = batch.to(self.device)
                 out = self.model(batch)
@@ -1575,11 +1555,6 @@ class TArrowFeatures(FeatureExtractor):
         self.embeddings = self._run_model(batches)
         # self._save_features(self.embeddings)
         return self.embeddings
-    
-    def compute_region_features(self, coords, masks=None, timepoints=None, labels=None):
-        features = super().compute_region_features(coords, masks, timepoints, labels)
-        self.embeddings = None
-        return features
 
 
 @register_backbone("random", 256)
