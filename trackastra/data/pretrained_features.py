@@ -1028,7 +1028,7 @@ class FeatureExtractorAugWrapper:
         self.extractor.do_save = False  # do not save intermediate features (augmented image embeddings)
         # instead, we will save the augmented features + coordinates on a per-object basis in an HDF5 file
 
-        self.save_path = None
+        # self.save_path = None
         self.force_recompute = force_recompute
         
         self._debug_view = None
@@ -1037,17 +1037,16 @@ class FeatureExtractorAugWrapper:
         root_path = self.extractor.save_path / "aug"
         if not root_path.exists():
             root_path.mkdir(parents=True, exist_ok=True)
-        self.save_path = root_path / f"{self.extractor.model_name_path}_aug.h5"
-        return self.save_path
+        return root_path / f"{self.extractor.model_name_path}_aug.h5"
         
     def _check_existing(self):
         """Checks if an h5 file already exists, and which augmentations are already saved."""
-        self.get_save_path()
-        if not self.save_path.exists() or self.force_recompute:
-            logger.debug(f"Augmentation file {self.save_path} does not exist or force_recompute is True. Recomputing features.")
+        save_path = self.get_save_path()
+        if not save_path.exists() or self.force_recompute:
+            logger.debug(f"Augmentation file {save_path} does not exist or force_recompute is True. Recomputing features.")
             return False, None, None
-        logger.info(f"Loading existing features from {self.save_path}...")
-        with h5py.File(self.save_path, "r") as f:
+        logger.info(f"Loading existing features from {save_path}...")
+        with h5py.File(save_path, "r") as f:
             existing_augs = list(f.keys())
             # remove all keys that are not integers
             existing_augs = [aug for aug in existing_augs if "window" not in aug]
@@ -1101,8 +1100,9 @@ class FeatureExtractorAugWrapper:
         """Augments the images and masks, computes the embeddings, and saves features incrementally."""
         # check existing features
         present, existing_augs, existing_features_dict = self._check_existing()
+        save_path = self.get_save_path()
         if present:
-            logger.debug(f"Saved features found at {self.save_path}.")
+            logger.debug(f"Saved features found at {save_path}.")
             if len(existing_augs) == self.n_aug + 1:
                 logger.info(f"All {self.n_aug} augmentations + original already exist. Loading existing features.")
                 self.all_aug_features = existing_features_dict
@@ -1165,12 +1165,9 @@ class FeatureExtractorAugWrapper:
 
     def _save_features(self, aug_id: int, aug_data: dict):
         """Saves the features for a specific augmentation to disk as HDF5."""
-        root_path = self.extractor.save_path / "aug"
-        if not root_path.exists():
-            root_path.mkdir(parents=True, exist_ok=True)
-        self.save_path = root_path / f"{self.extractor.model_name_path}_aug.h5"
+        save_path = self.get_save_path()
 
-        with h5py.File(self.save_path, "a") as f:
+        with h5py.File(save_path, "a") as f:
             # Check if the group already exists and delete it if necessary
             group_name = str(aug_id)
             if group_name in f:
@@ -1195,16 +1192,16 @@ class FeatureExtractorAugWrapper:
                     for key, value in lab_data["features"].items():
                         features_group.create_dataset(key, data=value, compression="gzip")
 
-        logger.info(f"Augmented features for augmentation {aug_id} saved to {self.save_path}.")
+        logger.info(f"Augmented features for augmentation {aug_id} saved to {save_path}.")
 
     def load_all_features(self) -> dict:
         """Loads all features from disk."""
-        self.get_save_path()
-        if not self.save_path.exists():
-            raise FileNotFoundError(f"Path {self.save_path} does not exist.")
-        
+        save_path = self.get_save_path()
+        if not save_path.exists():
+            raise FileNotFoundError(f"Path {save_path} does not exist.")
+
         features = FeatureExtractorAugWrapper.load_features(
-                self.save_path,
+                save_path,
                 additional_props=self.additional_features,
             )
         self.all_aug_features = features

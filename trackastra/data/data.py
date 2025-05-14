@@ -1439,7 +1439,6 @@ class CTCData(Dataset):
             FeatureExtractor,
         )
         self.feature_extractor_save_path = self.pretrained_config.save_path / f"embeddings/{img_folder_name}"
-        self.pretrained_config.save_path = self.feature_extractor_save_path
         # self.feature_extractor = FeatureExtractor.from_model_name(
         #     self.pretrained_config.model_name,
         #     img_shape, 
