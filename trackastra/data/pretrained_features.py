@@ -27,20 +27,25 @@ from transformers import (
 
 from trackastra.data import CTCData, wrfeat
 
-MICRO_SAM_AVAILABLE = False
 try:
     from micro_sam.util import get_sam_model as get_microsam_model
     MICRO_SAM_AVAILABLE = True
 except ImportError:
-    pass
+    MICRO_SAM_AVAILABLE = False
 
-TARROW_AVAILABLE = False
 try:
     from tarrow.models import TimeArrowNet
     from tarrow.utils import normalize as tap_normalize
     TARROW_AVAILABLE = True
 except ImportError:
-    pass
+    TARROW_AVAILABLE = False
+
+try:
+    from cellpose import transforms as cp_transforms
+    from cellpose.vit_sam import Transformer as CellposeSAM
+    CELLPOSE_AVAILABLE = True
+except ImportError:
+    CELLPOSE_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
@@ -74,8 +79,9 @@ PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.1
     "facebook/sam2.1-hiera-base-plus",  # 256
     "microsam/vit_b_lm",
     "microsam/vit_l_lm",
+    "weigertlab/tarrow",  # arbitrary. default 32
+    "mouseland/cellpose-sam",  # 192
     "random",
-    "weigertlab/tarrow"  # arbitrary. default 32
 ]
 
 
@@ -711,7 +717,7 @@ class FeatureExtractor(ABC):
         """Prepares batches of images for embedding extraction."""
         for i in range(0, len(images), self.batch_size):
             end = i + self.batch_size
-            end = len(images) if end > len(images) else end
+            end = min(end, len(images))
             batch = np.expand_dims(images[i:end], axis=1)  # (B, C, H, W)
             
             # required by AutoImageProcessor (PIL Image needs [0, 1] range)
@@ -1272,7 +1278,7 @@ class HieraFeatures(FeatureExtractor):
         # self.input_size = 224
         self.input_mul = 3
         self.input_size = int(self.input_mul * 224)
-        self.final_grid_size = int(7 * self.input_mul)  # 14x14 grid
+        self.final_grid_size = int(7 * self.input_mul)  # default is 7x7 grid
         self.n_channels = 3
         self.hidden_state_size = 768
         self.rescale_batches = False
@@ -1562,6 +1568,75 @@ class TAPFeatures(FeatureExtractor):
         # self._save_features(self.embeddings)
         return self.embeddings
 
+
+@register_backbone("mouseland/cellpose-sam", 192)
+class CellposeSAMFeatures(FeatureExtractor):
+    model_name = "mouseland/cellpose-sam"
+    
+    def __init__(
+        self, 
+        image_size: tuple[int, int],
+        save_path: str | Path,
+        batch_size: int = 4,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
+        ):
+        super().__init__(image_size, save_path, batch_size, device, mode)
+        self.input_size = 256
+        self.final_grid_size = 32  # 32x32 grid
+        self.n_channels = 3
+        self.hidden_state_size = 192
+        self.model = CellposeSAM()
+        self.model.to(self.device)
+        self.model.eval()
+
+        self.batch_return_type = "np.ndarray"
+        self.channel_first = False
+        self.rescale_batches = False
+        
+    def _prepare_batches(self, images):
+        for i in range(0, len(images), self.batch_size):
+            end = i + self.batch_size
+            end = min(end, len(images))
+            img_batch = images[i:end]  # (B, H, W)
+            ts = range(i, end)
+            batch = np.zeros((len(img_batch), self.orig_image_size[0], self.orig_image_size[1], 3), dtype=np.float32)
+            for n, b in enumerate(img_batch):
+                b_ = cp_transforms.convert_image(
+                    b,
+                    channel_axis=None,
+                    z_axis=None,
+                    do_3D=False
+                )
+                b_ = cp_transforms.normalize_img(b_)
+                batch[n] = b_
+            batch = np.stack(batch, axis=0)  # (B, H, W, C)
+            batch = np.moveaxis(batch, 3, 1)  # (B, C, H, W)
+
+            yield ts, batch
+            
+    def _run_model(self, images_batch: np.ndarray) -> torch.Tensor:
+        embeddings = []
+        
+        with torch.no_grad():
+            b = torch.from_numpy(images_batch).to(self.device)
+            b = F.interpolate(b, size=(self.input_size[0], self.input_size[1]), mode="bilinear", align_corners=False)
+
+            x = self.model.encoder.patch_embed(b.to(torch.float32))
+            if self.model.encoder.pos_embed is not None:
+                x = x + self.model.encoder.pos_embed
+            for blk in self.model.encoder.blocks:
+                x = blk(x)
+            x = self.model.encoder.neck(x.permute(0, 3, 1, 2))
+            x = self.model.out(x)  # (B, N, H, W)
+            embeddings.append(x)
+                
+        embeddings = torch.cat(embeddings, dim=0)  # (T, N, H, W)
+        embeddings = embeddings.moveaxis(1, 3)  # (T, H, W, N)
+        embeddings = embeddings.reshape(-1, self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size)  # (T, grid_size**2, N)
+        return embeddings
+    
 
 @register_backbone("random", 256)
 class RandomFeatures(FeatureExtractor):
