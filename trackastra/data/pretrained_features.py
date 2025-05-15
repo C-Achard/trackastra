@@ -55,6 +55,7 @@ HieraFeatures = None
 DinoV2Features = None
 SAMFeatures = None
 SAM2Features = None
+SAM2HighresFeatures = None
 MicroSAMFeatures = None
 TAPFeatures = None
 
@@ -81,6 +82,7 @@ PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.1
     "microsam/vit_l_lm",
     "weigertlab/tarrow",  # arbitrary. default 32
     "mouseland/cellpose-sam",  # 192
+    "facebook/sam2.1-hiera-base-plus/highres",  # 64
     "random",
 ]
 
@@ -574,8 +576,14 @@ class FeatureExtractor(ABC):
             raise ValueError(f"Model {config.model_name} is not available for feature extraction.")
         logger.info(f"Using model {config.model_name} with mode {config.mode} for pretrained feature extraction.")
         backbone = cls._available_backbones[config.model_name]["class"]
-        backbone.model_name = config.model_name
         
+        parts = config.model_name.split("/")
+        if len(parts) > 2:
+            model_name = "/".join(parts[:2])
+        else:
+            model_name = config.model_name
+        backbone.model_name = model_name
+
         model = backbone(
             image_size=image_shape, 
             save_path=save_path if save_path is not None else config.save_path,
@@ -659,9 +667,11 @@ class FeatureExtractor(ABC):
                 if torch.any(embeddings.isnan()):
                     raise RuntimeError("NaN values found in features.")
                 # logger.debug(f"Embeddings shape: {embeddings.shape}")
-                all_embeddings[ts] = embeddings
+                all_embeddings[ts] = embeddings.to(torch.float32)
+                assert embeddings.shape[-1] == self.hidden_state_size
             self.embeddings = all_embeddings
             self._save_features(all_embeddings)
+        logger.debug(f"Precomputed embeddings shape: {self.embeddings.shape}")
         return self.embeddings
 
     def _extract_region_embeddings(self, all_frames_embeddings, window, start_index, remaining=None):
@@ -813,6 +823,7 @@ class FeatureExtractor(ABC):
         from skimage.transform import resize
         masks_resized = resize(masks[0], (self.final_grid_size[0], self.final_grid_size[1]), anti_aliasing=False, order=0, preserve_range=True)
         v.add_labels(masks_resized)
+        logger.debug(f"Lost labels : {set(np.unique(masks)) - set(np.unique(masks_resized))}")
         
         napari.run()
             
@@ -831,7 +842,7 @@ class FeatureExtractor(ABC):
         embeddings = self._load_features()
         
         t = coords[0][0]
-        # if t > 80:
+        # if t > 81:
         #    self._debug_show_patches(embeddings, masks, coords, patch_idxs)
 
         # logger.debug(f"Embeddings shape: {embeddings.shape}")
@@ -1281,7 +1292,7 @@ class HieraFeatures(FeatureExtractor):
         self.rescale_batches = False
 
         ##
-        self.im_proc_kwargs["size"] = (self.input_size, self.input_size)
+        self.im_proc_kwargs["size"] = self.input_size
         ##
         self.image_processor = AutoImageProcessor.from_pretrained(self.model_name)
         config = HieraConfig.from_pretrained(self.model_name)
@@ -1328,7 +1339,7 @@ class DinoV2Features(FeatureExtractor):
         self.hidden_state_size = 768
         self.image_processor = AutoImageProcessor.from_pretrained(self.model_name)
         ##
-        self.im_proc_kwargs["size"] = (self.input_size, self.input_size)
+        self.im_proc_kwargs["size"] = self.input_size
         ##
         self.model = AutoModel.from_pretrained(self.model_name)
         self.rescale_batches = False
@@ -1431,23 +1442,65 @@ class SAM2Features(FeatureExtractor):
             # from torchvision.transforms.functional import resize
             # images_ten = resize(images_ten, size=(self.input_size, self.input_size))
             # images_ten = normalize(images_ten, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            out = self.model.image_encoder(images_ten)
+            # out = self.model.image_encoder(images_ten)
+            out = self.model.forward_image(images_ten)
             _, vision_feats, _, _ = self.model._prepare_backbone_features(out)
             # Add no_mem_embed, which is added to the lowest rest feat. map during training on videos
-            if self.model.directly_add_no_mem_embed:
-                vision_feats[-1] = vision_feats[-1] + self.model.no_mem_embed
-
-            feats = [
-                feat.permute(1, 2, 0).view(feat.shape[1], -1, *feat_size)
-                for feat, feat_size in zip(vision_feats[::-1], self._bb_feat_sizes[::-1])
-            ][::-1]
-            features = feats[-1]
+            if self.model_name != "facebook/sam2.1-hiera-base-plus/highres":
+                if self.model.directly_add_no_mem_embed:
+                    vision_feats[-1] = vision_feats[-1] + self.model.no_mem_embed
+                feats = [
+                    feat.permute(1, 2, 0).view(feat.shape[1], -1, *feat_size)
+                    for feat, feat_size in zip(vision_feats[::-1], self._bb_feat_sizes[::-1])
+                ][::-1]
+                features = feats[-1]
         # features = self.model.set_image_batch(images)
         # features = self.model._features['image_embed']
         B, N, H, W = features.shape
         return features.permute(0, 2, 3, 1).reshape(B, H * W, N)  # (B, grid_size**2, hidden_state_size)
+
+
+@register_backbone("facebook/sam2.1-hiera-base-plus/highres", 32)
+class SAM2HighresFeatures(SAM2Features):
+    model_name = "facebook/sam2.1-hiera-base-plus"
     
+    def __init__(
+        self, 
+        image_size: tuple[int, int],
+        save_path: str | Path,
+        batch_size: int = 4,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
+        ):
+        super().__init__(image_size, save_path, batch_size, device, mode)
+        self.final_grid_size = 256  # 256x256 grid
+        # self.final_grid_size = 128
+        self.hidden_state_size = 32
+        # self.hidden_state_size = 64
     
+    @property
+    def model_name_path(self):
+        """Returns the model name for saving."""
+        p = f"{self.model_name}/highres" 
+        return p.replace("/", "-")
+        
+    def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
+        """Extracts embeddings from the model."""
+        with torch.autocast(device_type=self.device), torch.inference_mode():
+            images_ten = torch.stack([torch.tensor(image) for image in images]).to(self.device)
+            # logger.debug(f"Image dtype: {images_ten.dtype}")
+            # logger.debug(f"Image shape: {images_ten.shape}")
+            # logger.debug(f"Image min :  {images_ten.min()}, max: {images_ten.max()}")
+            images_ten = F.interpolate(images_ten, size=(self.input_size[0], self.input_size[1]), mode="bilinear", align_corners=False)
+            out = self.model.forward_image(images_ten)
+            backbone_out, _, _, _ = self.model._prepare_backbone_features(out)
+            features = backbone_out["backbone_fpn"][0]  # (B, N, H, W)
+        
+        B, N, H, W = features.shape
+        return features.permute(0, 2, 3, 1).reshape(B, H * W, N)  # (B, grid_size**2, hidden_state_size)
+    
+
 @register_backbone("microsam/vit_b_lm", 256)
 @register_backbone("microsam/vit_l_lm", 256)
 class MicroSAMFeatures(FeatureExtractor):
@@ -1623,7 +1676,7 @@ class CellposeSAMFeatures(FeatureExtractor):
             x = self.model.encoder.patch_embed(b.to(torch.float32))
             if self.model.encoder.pos_embed is not None:
                 x = x + self.model.encoder.pos_embed
-            for blk in self.model.encoder.blocks:
+            for i, blk in enumerate(self.model.encoder.blocks):
                 x = blk(x)
             x = self.model.encoder.neck(x.permute(0, 3, 1, 2))
             x = self.model.out(x)  # (B, N, H, W)
@@ -1650,21 +1703,30 @@ class RandomFeatures(FeatureExtractor):
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 1024
-        self.final_grid_size = 64
+        # self.final_grid_size = self.orig_image_size
+        self.final_grid_size = 128
         self.n_channels = 3
-        self.hidden_state_size = 256
+        self.hidden_state_size = 64
         
         self._seed = 42
-        self._generator = torch.Generator(device=device).manual_seed(self._seed)
+        self.device = "cpu"
+        self._generator = torch.Generator(device="cpu").manual_seed(self._seed)
+        
+        self.do_save = False
         
     def _run_model(self, images) -> torch.Tensor:
         """Extracts embeddings from the model."""
         # Normal distribution
         # return torch.randn(len(images), self.final_grid_size**2, self.hidden_state_size, generator=self._generator).to(self.device)
         # Uniform distribution
-        feats = torch.rand(len(images), self.final_grid_size**2, self.hidden_state_size, generator=self._generator).to(self.device)
+        feats = torch.rand(
+                len(images),
+                self.final_grid_size[0] * self.final_grid_size[1], 
+                self.hidden_state_size, 
+                generator=self._generator
+            )
         feats = feats * 4 - 2  # [-2, 2]
-        return feats
+        return feats.to("cpu")
 
 
 FeatureExtractor._available_backbones = AVAILABLE_PRETRAINED_BACKBONES
