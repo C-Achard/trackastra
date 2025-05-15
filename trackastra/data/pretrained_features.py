@@ -1427,7 +1427,7 @@ class SAM2Features(FeatureExtractor):
             # logger.debug(f"Image dtype: {images_ten.dtype}")
             # logger.debug(f"Image shape: {images_ten.shape}")
             # logger.debug(f"Image min :  {images_ten.min()}, max: {images_ten.max()}")
-            images_ten = F.interpolate(images_ten, size=(self.input_size, self.input_size), mode="bilinear", align_corners=False)
+            images_ten = F.interpolate(images_ten, size=(self.input_size[0], self.input_size[1]), mode="bilinear", align_corners=False)
             # from torchvision.transforms.functional import resize
             # images_ten = resize(images_ten, size=(self.input_size, self.input_size))
             # images_ten = normalize(images_ten, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
