@@ -134,6 +134,42 @@ class DecoderLayer(nn.Module):
 
         return x
 
+class LearnedRoPERotation(nn.Module):
+    def __init__(self, coord_dim, feature_dim, rope_dim=None):
+        super().__init__()
+        self.rope_dim = rope_dim or feature_dim
+        # MLP to predict rotation angle(s) from coords
+        self.angle_mlp = nn.Sequential(
+            nn.Linear(coord_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, self.rope_dim // 2)  # one angle per feature pair
+        )
+
+    def forward(self, features, coords):
+        """
+        features: (B, N, D)
+        coords: (B, N, coord_dim)
+        """
+        B, N, D = features.shape
+        assert D % 2 == 0, "Feature dim must be even for RoPE."
+        rope_dim = self.rope_dim
+
+        # Predict angles (B, N, rope_dim//2)
+        angles = self.angle_mlp(coords[..., :])  # you can select which coords to use
+        # Expand to (B, N, rope_dim)
+        cos = torch.cos(angles)
+        sin = torch.sin(angles)
+        # Prepare features for rotation
+        f = features[..., :rope_dim].reshape(B, N, -1, 2)
+        x, y = f[..., 0], f[..., 1]
+        # Apply rotation
+        x_rot = x * cos - y * sin
+        y_rot = x * sin + y * cos
+        rotated = torch.stack([x_rot, y_rot], dim=-1).reshape(B, N, rope_dim)
+        # Concatenate with the rest of the features if needed
+        if rope_dim < D:
+            rotated = torch.cat([rotated, features[..., rope_dim:]], dim=-1)
+        return rotated
 
 # class BidirectionalRelativePositionalAttention(RelativePositionalAttention):
 #     def forward(

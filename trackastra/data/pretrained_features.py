@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import os
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
@@ -490,6 +491,7 @@ class FeatureExtractor(ABC):
         self.device = device
         self.mode = mode
         self.additional_features = None
+        self.apply_rope = True
         # Saving parameters
         self.save_path: str | Path = save_path
         self.do_save = True
@@ -723,6 +725,50 @@ class FeatureExtractor(ABC):
             b = b * 255.0
         return b
     
+    
+    @staticmethod
+    def get_centroids_from_masks(masks: np.ndarray) -> np.ndarray:
+        """
+        Computes the centroids of the objects in the masks.
+        
+        Args:
+            masks: (n_objects, H, W) array of masks.
+        Returns:
+            Centroids: (n_objects, 2) array of (y, x) centroid coordinates, normalized to [0, 1].
+        """
+        centroids_df = regionprops(masks)
+        centroids = np.array([region.centroid for region in centroids_df])
+        centroids[:, 0] = centroids[:, 0] / masks.shape[1]
+        centroids[:, 1] = centroids[:, 1] / masks.shape[2]
+        return centroids
+    
+    @staticmethod
+    def apply_rope_to_features(features: torch.Tensor, centroids: np.ndarray) -> torch.Tensor:
+        """
+        Applies a RoPE-style rotation to each feature vector based on the object's centroid.
+        
+        Args:
+            features: (n_objects, hidden_state_size) tensor of features.
+            centroids: (n_objects, 2) array of (y, x) centroid coordinates, normalized to [0, 1].
+        Returns:
+            Rotated features: (n_objects, hidden_state_size)
+        """
+        n_objects, d = features.shape
+        assert d % 2 == 0, "Feature dimension must be even for RoPE."
+        # Here, we use a simple hash: angle = 2*pi*(cy + cx) mod 2*pi
+        angles = 2 * math.pi * (centroids[:, 0] + centroids[:, 1]) % (2 * math.pi)  # (n_objects,)
+
+        cos = torch.cos(torch.tensor(angles, device=features.device)).unsqueeze(1)
+        sin = torch.sin(torch.tensor(angles, device=features.device)).unsqueeze(1)
+
+        features_ = features.view(n_objects, -1, 2)
+        x, y = features_[..., 0], features_[..., 1]
+        # Apply rotation
+        x_rot = x * cos - y * sin
+        y_rot = x * sin + y * cos
+        rotated = torch.stack([x_rot, y_rot], dim=-1).reshape(n_objects, d)
+        return rotated
+    
     def _prepare_batches(self, images):
         """Prepares batches of images for embedding extraction."""
         for i in range(0, len(images), self.batch_size):
@@ -855,7 +901,10 @@ class FeatureExtractor(ABC):
         except IndexError as e:
             # TODO improve handling of this error. Maybe check shape earlier
             logger.error(f"IndexError: {e} - Embeddings exist but do not have the correct shape. Did the model input size change ? If so, please delete saved embeddings and recompute.")
-            
+        
+        if self.apply_rope:
+            centroids = FeatureExtractor.get_centroids_from_masks(masks)
+            feats = FeatureExtractor.apply_rope_to_features(feats, centroids) 
         return feats
     
     # @average_time_decorator
