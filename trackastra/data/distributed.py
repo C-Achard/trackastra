@@ -269,7 +269,7 @@ class BalancedDataModule(LightningDataModule):
             start = default_timer()
             local_kwargs = deepcopy(self.dataset_kwargs)
             if self.dataset_kwargs.get("features") == "pretrained_feats_aug" and split == "val":
-                # do not computea augmented pretrained features for the val set
+                # do not compute augmented pretrained features for the val set
                 local_kwargs["features"] = "pretrained_feats"
 
             ctc_datasets = [

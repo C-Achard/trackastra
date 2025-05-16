@@ -894,6 +894,7 @@ def train(args):
             compress=args.compress,
             pretrained_backbone_config=pretrained_config,
             pretrained_n_augmentations=args.pretrained_n_augs,
+            rotate_features=args.rotate_features,
         )
         dummy_model = TrackingTransformer(
             coord_dim=dummy_data.ndim,
@@ -964,6 +965,7 @@ def train(args):
         compress=args.compress,
         pretrained_backbone_config=pretrained_config,
         pretrained_n_augmentations=args.pretrained_n_augs,
+        rotate_features=args.rotate_features,
     )
     sampler_kwargs = dict(
         batch_size=args.batch_size,
@@ -1370,6 +1372,12 @@ def parse_train_args():
         type=str2bool,
         default=False,
         help="Disable all coordinates T(Z)XY as input features. --features cannot be none if True.",
+    )
+    parser.add_argument(
+        "--rotate_features",
+        type=str2bool,
+        default=False,
+        help="Rotate features using augmented coordinates. features must be 'pretrained_feats' or 'pretrained_feats_aug' if True.",
     )
 
     args, unknown_args = parser.parse_known_args()

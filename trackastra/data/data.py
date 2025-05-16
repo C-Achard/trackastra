@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Sequence
 from pathlib import Path
@@ -204,6 +205,7 @@ class CTCData(Dataset):
         compress: bool = False,
         pretrained_backbone_config: PretrainedFeatureExtractorConfig | None = None,
         # pca_preprocessor: EmbeddingsPCACompression | None = None,
+        rotate_features: bool = False,
         **kwargs,
     ) -> None:
         """Args:
@@ -235,6 +237,9 @@ class CTCData(Dataset):
             Configuration for the pretrained backbone.
             If mode is set to "pretrained_feats", this configuration is used to extract features.
             Ignored otherwise.
+        rotate_features (bool):
+            Apply rotation to features based on (augmented) coordinates.
+            Only valid if used with "pretrained_feats" or "pretrained_feats_aug" mode.
         # pca_preprocessor (EmbeddingsPCACompression):
         #     PCA preprocessor for the pretrained features.
         #     If mode is set to "pretrained_feats", this is used to reduce the dimensionality of the features.
@@ -253,6 +258,7 @@ class CTCData(Dataset):
         self.detection_folders = detection_folders
         self._ndim = ndim
         self.features = features
+        self.rotate_feats = rotate_features
 
         if features not in self.VALID_FEATURES and features not in _PROPERTIES[self._ndim]:
             raise ValueError(
@@ -1404,6 +1410,11 @@ class CTCData(Dataset):
             coords[:, 1:] += torch.randint(0, 512, (1, self.ndim))
         else:
             coords = coords0.clone()
+        
+        if self.features == "pretrained_feats" and self.rotate_feats:
+            image_shape = self.feature_extractor.orig_image_shape
+            features = CTCData.rotate_features(features, coords, image_shape)
+            
         res = dict(
             features=features,
             coords0=coords0,
@@ -1490,6 +1501,41 @@ class CTCData(Dataset):
         else:
             self._compute_pretrained_model_features()
     
+    @staticmethod
+    def rotate_features(features: torch.Tensor, coords: torch.Tensor, image_shape: tuple) -> torch.Tensor:
+        """Applies a RoPE-style rotation to each feature vector based on the object's centroid.
+        
+        Args:
+            features: (n_objects, hidden_state_size) tensor of features.
+            coords: (n_objects, 2) tensor of coordinates.
+            image_shape: (time, height, width) shape of the input image.
+
+        Returns:
+            Rotated features: (n_objects, hidden_state_size)
+        """
+        import math
+        n_objects, d = features.shape
+        assert d % 2 == 0, "Feature dimension must be even for RoPE."
+        # Normalize x and y to [0, 1]
+        x_norm = coords[:, 1] / image_shape[1]
+        y_norm = coords[:, 2] / image_shape[2]
+        # Compute two angles for x and y
+        angle_x = 2 * math.pi * x_norm
+        angle_y = 2 * math.pi * y_norm
+        # Interleave angles for each feature pair
+        angles = torch.stack([angle_x, angle_y], dim=1).repeat(1, d // 2)  # (n_objects, d)
+        angles = angles.view(n_objects, d)
+        # Prepare cos/sin
+        cos = torch.cos(angles)
+        sin = torch.sin(angles)
+        # Interleave features for rotation
+        features_ = features.view(n_objects, -1, 2)
+        x_feat, y_feat = features_[..., 0], features_[..., 1]
+        x_rot = x_feat * cos[:, ::2] - y_feat * sin[:, ::2]
+        y_rot = x_feat * sin[:, ::2] + y_feat * cos[:, ::2]
+        rotated = torch.stack([x_rot, y_rot], dim=-1).reshape(n_objects, d)
+        return rotated  # (n_objects, d)
+
 
 class CTCDataAugPretrainedFeats(CTCData):
     """CTCData with pretrained features."""
@@ -1717,7 +1763,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         n_entries = self.n_augs + 1
         # augmented_dict structure :
         #  - aug_id:
-        #     - applied_augs: dict, record of the applied augmentations
+        #     - metadata: dict, record of the applied augmentations
         #    - data: the data for aug_id
         #         - t: frame between 0 and n_frames
         #           - lab: label of the detection
@@ -1967,6 +2013,13 @@ class CTCDataAugPretrainedFeats(CTCData):
         else:
             coords = coords0.clone()
         
+        if self.rotate_feats:
+            with h5py.File(self._aug_embeds_h5, "r") as f:
+                metadata_json = f[str(random_aug_choice)].attrs["metadata"]
+                metadata = json.loads(metadata_json)
+                image_shape = metadata["image_shape"]
+            features = CTCData.rotate_features(features, coords, image_shape)
+        
         res = dict(
             features=features,
             coords0=coords0,
@@ -1984,7 +2037,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         #     mask = torch.from_numpy(mask.astype(int)).long()
         #     res["mask"] = mask
         return res
-        
+
 
 def _ctc_lineages(df, masks, t1=0, t2=None):
     """From a ctc dataframe, create a digraph that contains all sublineages

@@ -299,6 +299,7 @@ class PretrainedAugmentations:
         self._aug = None
         self._rng = np.random.RandomState(rng_seed)
         self.normalize = normalize
+        self.image_shape = None
 
     def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask, normalize=True) -> tuple[torch.Tensor, tv_tensors.Mask, dict]:
         """Applies the augmentations to the images."""
@@ -312,6 +313,7 @@ class PretrainedAugmentations:
         masks = torch.unsqueeze(masks, dim=1)  # add channel dimension (T, C, H, W) for augmentation
         
         images, masks = self._aug(images, masks)
+        self.image_shape = images.shape
         # NOTE : most models do require 3 channels, but this will be done in FeatureExtractor, so the output is squeezed
         return images.squeeze(), masks.squeeze(), self.gather_records()
     
@@ -343,6 +345,7 @@ class PretrainedAugmentations:
         self.aug_record = {}
         for aug in self.aug_list:
             self.aug_record.update(aug.applied_record)
+        self.aug_record["image_shape"] = self.image_shape
         return self.aug_record
 
 # Configs for pretrained models ###
@@ -384,6 +387,7 @@ class PretrainedFeatureExtractorConfig:
     n_augmented_copies: int = 0  # number of augmented copies to create
     pca_components: int = None  # for PCA reduction of the features
     pca_preprocessor_path: str | Path = None  # for PCA preprocessor path
+    apply_rope: bool = False  # whether to apply "RoPE" to the features
     
     def __post_init__(self):
         self._guess_device()
@@ -491,7 +495,7 @@ class FeatureExtractor(ABC):
         self.device = device
         self.mode = mode
         self.additional_features = None
-        self.apply_rope = True
+        self.apply_rope = False
         # Saving parameters
         self.save_path: str | Path = save_path
         self.do_save = True
@@ -598,6 +602,7 @@ class FeatureExtractor(ABC):
             # aug_pipeline=PretrainedAugmentations() if config.n_augmented_copies > 0 else None,
         )
         model.additional_features = config.additional_features
+        model.apply_rope = config.apply_rope
         return model
         
     def clear_model(self):
@@ -725,14 +730,13 @@ class FeatureExtractor(ABC):
             b = b * 255.0
         return b
     
-    
     @staticmethod
     def get_centroids_from_masks(masks: np.ndarray) -> np.ndarray:
-        """
-        Computes the centroids of the objects in the masks.
+        """Computes the centroids of the objects in the masks.
         
         Args:
             masks: (n_objects, H, W) array of masks.
+
         Returns:
             Centroids: (n_objects, 2) array of (y, x) centroid coordinates, normalized to [0, 1].
         """
@@ -744,12 +748,12 @@ class FeatureExtractor(ABC):
     
     @staticmethod
     def apply_rope_to_features(features: torch.Tensor, centroids: np.ndarray) -> torch.Tensor:
-        """
-        Applies a RoPE-style rotation to each feature vector based on the object's centroid.
+        """Applies a RoPE-style rotation to each feature vector based on the object's centroid.
         
         Args:
             features: (n_objects, hidden_state_size) tensor of features.
             centroids: (n_objects, 2) array of (y, x) centroid coordinates, normalized to [0, 1].
+
         Returns:
             Rotated features: (n_objects, hidden_state_size)
         """
@@ -1081,7 +1085,7 @@ class FeatureExtractorAugWrapper:
         self.additional_features = extractor.additional_features
         self.n_aug = n_aug
         self.aug_pipeline = augmenter
-        self.all_aug_features = {}  # n_aug -> {aug_id: {applied_augs, data}}
+        self.all_aug_features = {}  # n_aug -> {aug_id: {metadata, data}}
         # data -> {t: {lab: {"coords": coords, "features": features}}}
         
         self.extractor.force_recompute = True
@@ -1185,6 +1189,9 @@ class FeatureExtractorAugWrapper:
         self.all_aug_features = {
             "0": {
                 "data": orig_feat_dict,
+                "metadata": {
+                    "image_shape": images.shape,
+                    }
             }
         }
         if "0" not in existing_aug_ids:
@@ -1195,12 +1202,12 @@ class FeatureExtractorAugWrapper:
             if str(f"{n + 1}") in existing_aug_ids:
                 logger.info(f"Augmentation {n + 1} already exists. Skipping computation.")
                 aug_feat_dict = existing_features_dict[str(n + 1)]["data"]
-                aug_record = existing_features_dict[str(n + 1)]["applied_augs"]
+                aug_record = existing_features_dict[str(n + 1)]["metadata"]
             else:
                 aug_feat_dict, aug_record = self._compute_augmented(images, masks)
             
             self.all_aug_features[str(n + 1)] = {
-                "applied_augs": aug_record,
+                "metadata": aug_record,
                 "data": aug_feat_dict,
             }
             if str(n + 1) not in existing_aug_ids:
@@ -1236,7 +1243,7 @@ class FeatureExtractorAugWrapper:
             group = f.create_group(group_name)
             # Store applied augmentations as attributes
             try:
-                group.attrs["applied_augs"] = json.dumps(aug_data["applied_augs"])
+                group.attrs["metadata"] = json.dumps(aug_data["metadata"])
             except KeyError:
                 pass
 
@@ -1282,9 +1289,9 @@ class FeatureExtractorAugWrapper:
                 if "window" in aug_id:
                     continue
                 try:
-                    applied_augs = json.loads(group.attrs["applied_augs"])
+                    metadata = json.loads(group.attrs["metadata"])
                 except KeyError:
-                    applied_augs = None
+                    metadata = None
                 data = {}
                 for t, t_group in group.items():
                     t = int(t.split("_")[-1])
@@ -1311,7 +1318,7 @@ class FeatureExtractorAugWrapper:
                             "features": features,
                         }
                 all_data[aug_id] = {
-                    "applied_augs": applied_augs,
+                    "metadata": metadata,
                     "data": data,
                 }
         return all_data
@@ -1681,6 +1688,8 @@ class CellposeSAMFeatures(FeatureExtractor):
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
         **kwargs,
         ):
+        if not CELLPOSE_AVAILABLE:
+            raise ImportError("Cellpose is not available. Please install it following the instructions in the documentation.")
         super().__init__(image_size, save_path, batch_size, device, mode)
         self.input_size = 256
         self.final_grid_size = 32  # 32x32 grid
