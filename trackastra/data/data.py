@@ -1412,7 +1412,10 @@ class CTCData(Dataset):
             coords = coords0.clone()
         
         if self.features == "pretrained_feats" and self.rotate_feats:
-            image_shape = self.feature_extractor.orig_image_shape
+            if isinstance(img, _CompressedArray):
+                image_shape = img._shape
+            else:
+                image_shape = img.shape
             features = CTCData.rotate_features(features, coords, image_shape)
             
         res = dict(

@@ -1,6 +1,5 @@
 import json
 import logging
-import math
 import os
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
@@ -746,8 +745,7 @@ class FeatureExtractor(ABC):
         centroids[:, 1] = centroids[:, 1] / masks.shape[2]
         return centroids
     
-    @staticmethod
-    def apply_rope_to_features(features: torch.Tensor, centroids: np.ndarray) -> torch.Tensor:
+    def apply_rope_to_features(self, features: torch.Tensor, centroids: np.ndarray) -> torch.Tensor:
         """Applies a RoPE-style rotation to each feature vector based on the object's centroid.
         
         Args:
@@ -759,18 +757,20 @@ class FeatureExtractor(ABC):
         """
         n_objects, d = features.shape
         assert d % 2 == 0, "Feature dimension must be even for RoPE."
-        # Here, we use a simple hash: angle = 2*pi*(cy + cx) mod 2*pi
-        angles = 2 * math.pi * (centroids[:, 0] + centroids[:, 1]) % (2 * math.pi)  # (n_objects,)
+        angle_x = torch.from_numpy(2 * np.pi * centroids[:, 0]).to(features.device)
+        angle_y = torch.from_numpy(2 * np.pi * centroids[:, 1]).to(features.device)
 
-        cos = torch.cos(torch.tensor(angles, device=features.device)).unsqueeze(1)
-        sin = torch.sin(torch.tensor(angles, device=features.device)).unsqueeze(1)
-
+        angles = torch.stack([angle_x, angle_y], dim=1).repeat(1, d // 2)
+        angles = angles.view(n_objects, d)
+        cos = torch.cos(angles)
+        sin = torch.sin(angles)
         features_ = features.view(n_objects, -1, 2)
-        x, y = features_[..., 0], features_[..., 1]
-        # Apply rotation
-        x_rot = x * cos - y * sin
-        y_rot = x * sin + y * cos
+        x_feat, y_feat = features_[..., 0], features_[..., 1]
+        x_rot = x_feat * cos[:, ::2] - y_feat * sin[:, ::2]
+        y_rot = x_feat * sin[:, ::2] + y_feat * cos[:, ::2]
         rotated = torch.stack([x_rot, y_rot], dim=-1).reshape(n_objects, d)
+        if torch.allclose(rotated, features):
+            logger.warning("Rotated features are equal to original features. RoPE may not be applied correctly.")
         return rotated
     
     def _prepare_batches(self, images):
@@ -908,7 +908,7 @@ class FeatureExtractor(ABC):
         
         if self.apply_rope:
             centroids = FeatureExtractor.get_centroids_from_masks(masks)
-            feats = FeatureExtractor.apply_rope_to_features(feats, centroids) 
+            feats = self.apply_rope_to_features(feats, centroids) 
         return feats
     
     # @average_time_decorator
