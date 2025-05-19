@@ -1749,7 +1749,7 @@ class CellposeSAMFeatures(FeatureExtractor):
         return embeddings
     
 
-@register_backbone("random", 256)
+@register_backbone("random", 64)
 class RandomFeatures(FeatureExtractor):
     model_name = "random"
 

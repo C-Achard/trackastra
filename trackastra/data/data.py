@@ -375,7 +375,15 @@ class CTCData(Dataset):
     
     @property
     def feat_dim(self):
-        return self.FEATURES_DIMENSIONS[self.features][self.ndim]
+        match self.features:
+            case "pretrained_feats" | "pretrained_feats_aug":
+                try:
+                    return self.FEATURES_DIMENSIONS[self.features]
+                except KeyError:
+                    self.update_pretrained_feat_dim(self.pretrained_config)
+                    return self.FEATURES_DIMENSIONS[self.features]
+            case _:
+                return self.FEATURES_DIMENSIONS[self.features][self.ndim]
     
     @property
     def pretrained_config(self):
@@ -388,6 +396,10 @@ class CTCData(Dataset):
                 PretrainedFeatureExtractorConfig,
             )
             config = PretrainedFeatureExtractorConfig.from_dict(config)
+        self.update_pretrained_feat_dim(config)
+        self._pretrained_config = config
+    
+    def update_pretrained_feat_dim(self, config):
         try:
             self.FEATURES_DIMENSIONS["pretrained_feats"] = config.feat_dim
         except AttributeError as e:
@@ -395,7 +407,6 @@ class CTCData(Dataset):
                 self.FEATURES_DIMENSIONS["pretrained_feats"] = config["feat_dim"]
             else:
                 raise e
-        self._pretrained_config = config
     
     @staticmethod
     def get_feat_dim(features, ndim, ):
@@ -1416,8 +1427,16 @@ class CTCData(Dataset):
                 image_shape = img._shape
             else:
                 image_shape = img.shape
-            features = CTCData.rotate_features(features, coords, image_shape)
-            
+            if self.pretrained_config.additional_features is not None:
+                skip = CTCData.FEATURES_DIMENSIONS[self.pretrained_config.additional_features][2] + 1
+            else:
+                skip = 0
+            features = CTCData.rotate_features(
+                features, coords, image_shape,
+                n_rot_dims=self.feat_dim // 2,
+                skip_first=skip
+            )
+
         res = dict(
             features=features,
             coords0=coords0,
@@ -1503,22 +1522,37 @@ class CTCData(Dataset):
             return
         else:
             self._compute_pretrained_model_features()
-    
-    @staticmethod
-    def rotate_features(features: torch.Tensor, coords: torch.Tensor, image_shape: tuple) -> torch.Tensor:
-        """Applies a RoPE-style rotation to each feature vector based on the object's centroid.
         
+    @staticmethod
+    def rotate_features(
+        features: torch.Tensor,
+        coords: torch.Tensor,
+        image_shape: tuple,
+        n_rot_dims: int | None = None,
+        skip_first: int = 0,
+    ) -> torch.Tensor:
+        """Applies a RoPE-style rotation to each feature vector based on the object's centroid.
+
         Args:
             features: (n_objects, hidden_state_size) tensor of features.
             coords: (n_objects, 2) tensor of coordinates.
             image_shape: (time, height, width) shape of the input image.
+            n_rot_dims: Number of feature dimensions to apply rotation to (must be even). If None, rotate all.
+            skip_first: Number of dimensions to skip at the beginning of the feature vector. No effect if 0.
 
         Returns:
             Rotated features: (n_objects, hidden_state_size)
         """
         import math
-        n_objects, d = features.shape
-        assert d % 2 == 0, "Feature dimension must be even for RoPE."
+        N, D = features.shape
+        assert skip_first < n_rot_dims, "skip_first must be less than n_rot_dims."
+        if n_rot_dims is None:
+            n_rot_dims = D
+        if skip_first != 0:
+            n_rot_dims = n_rot_dims - skip_first
+        assert n_rot_dims % 2 == 0, "n_rot_dims must be even for RoPE."
+        assert n_rot_dims <= D, "n_rot_dims cannot exceed feature dimension."
+
         # Normalize x and y to [0, 1]
         x_norm = coords[:, 1] / image_shape[1]
         y_norm = coords[:, 2] / image_shape[2]
@@ -1526,17 +1560,21 @@ class CTCData(Dataset):
         angle_x = 2 * math.pi * x_norm
         angle_y = 2 * math.pi * y_norm
         # Interleave angles for each feature pair
-        angles = torch.stack([angle_x, angle_y], dim=1).repeat(1, d // 2)  # (n_objects, d)
-        angles = angles.view(n_objects, d)
+        angles = torch.stack([angle_x, angle_y], dim=1).repeat(1, n_rot_dims // 2)
+        angles = angles.view(N, n_rot_dims)
         # Prepare cos/sin
         cos = torch.cos(angles)
         sin = torch.sin(angles)
         # Interleave features for rotation
-        features_ = features.view(n_objects, -1, 2)
-        x_feat, y_feat = features_[..., 0], features_[..., 1]
+        features_rot = features[:, skip_first:n_rot_dims + skip_first].view(N, -1, 2)
+        x_feat, y_feat = features_rot[..., 0], features_rot[..., 1]
         x_rot = x_feat * cos[:, ::2] - y_feat * sin[:, ::2]
         y_rot = x_feat * sin[:, ::2] + y_feat * cos[:, ::2]
-        rotated = torch.stack([x_rot, y_rot], dim=-1).reshape(n_objects, d)
+        rotated_part = torch.stack([x_rot, y_rot], dim=-1).reshape(N, n_rot_dims)
+        if n_rot_dims < D:
+            rotated = torch.cat([rotated_part, features[:, n_rot_dims:]], dim=1)
+        else:
+            rotated = rotated_part
         return rotated  # (n_objects, d)
 
 
@@ -2021,7 +2059,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 metadata_json = f[str(random_aug_choice)].attrs["metadata"]
                 metadata = json.loads(metadata_json)
                 image_shape = metadata["image_shape"]
-            features = CTCData.rotate_features(features, coords, image_shape)
+            features = CTCData.rotate_features(features, coords, image_shape, n_rot_dims=self.feat_dim // 2)
         
         res = dict(
             features=features,
