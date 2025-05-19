@@ -134,6 +134,7 @@ class DecoderLayer(nn.Module):
 
         return x
 
+
 class LearnedRoPERotation(nn.Module):
     def __init__(self, coord_dim, feature_dim, rope_dim=None):
         super().__init__()
@@ -146,9 +147,8 @@ class LearnedRoPERotation(nn.Module):
         )
 
     def forward(self, features, coords):
-        """
-        features: (B, N, D)
-        coords: (B, N, coord_dim)
+        """features: (B, N, D)
+        coords: (B, N, coord_dim).
         """
         B, N, D = features.shape
         assert D % 2 == 0, "Feature dim must be even for RoPE."
@@ -431,6 +431,7 @@ class TrackingTransformer(torch.nn.Module):
                 )
         else:
             self.feat_embed = nn.Identity()
+        self.feat_norm = nn.LayerNorm(feat_dim)
 
         if self._disable_all_coords:
             self.pos_embed = nn.Identity()
@@ -472,13 +473,14 @@ class TrackingTransformer(torch.nn.Module):
                     raise ValueError("features is None and all coords are disabled. Please enable at least one of the two.")
                 features = pos
             else:
-                if self._expand_features_dim is None:
-                    features = self.feat_embed(features)
-                else:
-                    features_expanded = features[..., :self._expand_features_dim]
-                    features_non_expanded = features[..., self._expand_features_dim:]
-                    features_expanded = self.feat_embed(features_expanded)
-                    features = torch.cat((features_non_expanded, features_expanded), axis=-1)
+                # if self._expand_features_dim is None:
+                features = self.feat_embed(features)
+                features = self.feat_norm(features)
+                # else:
+                #     features_expanded = features[..., :self._expand_features_dim]
+                #     features_non_expanded = features[..., self._expand_features_dim:]
+                #     features_expanded = self.feat_embed(features_expanded)
+                #     features = torch.cat((features_non_expanded, features_expanded), axis=-1)
                 if not self._disable_all_coords:
                     features = torch.cat((pos, features), axis=-1)
         
