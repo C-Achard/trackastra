@@ -82,7 +82,7 @@ PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.1
     "microsam/vit_l_lm",
     "weigertlab/tarrow",  # arbitrary. default 32
     "mouseland/cellpose-sam",  # 192
-    "facebook/sam2.1-hiera-base-plus/highres",  # 64
+    "facebook/sam2.1-hiera-base-plus/highres",
     "random",
 ]
 

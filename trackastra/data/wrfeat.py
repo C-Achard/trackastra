@@ -796,6 +796,21 @@ class AugmentationFactory:
                 ],
                 return_type=return_type,
             )
+        elif augment == 4:
+                        return WRAugmentationPipeline(
+                [
+                    WRRandomAffine(
+                        p=0.8, 
+                        degrees=180, 
+                        scale=(0.9, 1.1), 
+                        shear=(0.1, 0.1), 
+                        scale_isotropic=(0.5, 2.0)
+                    ),
+                    # WRRandomMovement(**AugmentationFactory.default_args["movement"]),
+                    # WRRandomOffset(**AugmentationFactory.default_args["offset"]),
+                ],
+                return_type=return_type,
+            )
         else:
             raise ValueError(f"Invalid augment level {augment}")
 
