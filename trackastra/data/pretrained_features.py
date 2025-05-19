@@ -891,9 +891,12 @@ class FeatureExtractor(ABC):
         # logger.debug(f"Unique timepoints: {unique_timepoints}")
         embeddings = self._load_features()
         
-        t = coords[0][0]
+        # try:
+        # t = coords[0][0]
         # if t > 81:
         #    self._debug_show_patches(embeddings, masks, coords, patch_idxs)
+        # except IndexError:
+        #   pass
 
         # logger.debug(f"Embeddings shape: {embeddings.shape}")
         embeddings_dict = {t: embeddings[t] for t in unique_timepoints}
