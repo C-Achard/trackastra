@@ -83,7 +83,8 @@ PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.1
     "weigertlab/tarrow",  # arbitrary. default 32
     "mouseland/cellpose-sam",  # 192
     "facebook/sam2.1-hiera-base-plus/highres",
-    "random",
+    "debug/random",
+    "debug/encoded_labels",  # 32
 ]
 
 
@@ -289,10 +290,11 @@ class PretrainedAugmentations:
         self.aug_list = [
             BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
             FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
-            # RotAugment(degrees=10, rng_seed=rng_seed),
+            RotAugment(degrees=10, rng_seed=rng_seed),
             Rot90Augment(p=0.5, rng_seed=rng_seed),
             AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
-            ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),
+            # add downscaling, up to 0.8
+            # ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),
             # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
         ]
         self._aug = None
@@ -1747,11 +1749,52 @@ class CellposeSAMFeatures(FeatureExtractor):
         embeddings = embeddings.moveaxis(1, 3)  # (T, H, W, N)
         embeddings = embeddings.reshape(-1, self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size)  # (T, grid_size**2, N)
         return embeddings
-    
 
-@register_backbone("random", 64)
+
+@register_backbone("debug/encoded_labels", 64)
+class EncodedLabelsFeatures(FeatureExtractor):
+    """Encodes labels to 32 dimensions. Should work as a "perfect" feature extractor that uses GT labels as a sanity check."""
+    model_name = "debug/encoded_labels"
+
+    def __init__(
+        self, 
+        image_size: tuple[int, int],
+        save_path: str | Path,
+        batch_size: int = 4,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
+        ):
+        super().__init__(image_size, save_path, batch_size, device, mode)
+        self.input_size = 1024
+        self.final_grid_size = 32
+        self.n_channels = 1
+        self.hidden_state_size = 64
+        
+    def _run_model(self, images) -> torch.Tensor:
+        """Extracts embeddings from the model."""
+        pass
+    
+    def precompute_image_embeddings(self, images):
+        pass
+    
+    def _encode_labels(self, labels):
+        """Encodes the labels to D dimensions."""
+        features = np.zeros((labels.shape[0], self.hidden_state_size), dtype=np.float32)
+        for i in range(labels.shape[0]):
+            label = labels[i]
+            features[i] = np.array([int(x) for x in np.binary_repr(label, width=self.hidden_state_size)], dtype=np.float32)
+        
+        features = torch.from_numpy(features).to(self.device)
+        return features
+    
+    def compute_region_features(self, labels=None, **kwargs):
+        return self._encode_labels(labels)  # (n_labels, self.hidden_state_size)
+
+
+@register_backbone("debug/random", 64)
 class RandomFeatures(FeatureExtractor):
-    model_name = "random"
+    model_name = "debug/random"
 
     def __init__(
         self, 
