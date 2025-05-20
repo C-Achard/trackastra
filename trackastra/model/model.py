@@ -431,7 +431,7 @@ class TrackingTransformer(torch.nn.Module):
                 )
         else:
             self.feat_embed = nn.Identity()
-        self.feat_norm = nn.LayerNorm(feat_dim)
+        self.feat_norm = nn.LayerNorm(feat_dim * feat_embed_per_dim)
 
         if self._disable_all_coords:
             self.pos_embed = nn.Identity()
