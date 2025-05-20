@@ -282,6 +282,42 @@ class ElasticTransform(BaseAugmentation):
         self.applied_record["elastic_transform"] = (alpha, sigma)
         return transforms.ElasticTransform(alpha=alpha, sigma=sigma)
 
+class RandomScale(BaseAugmentation):
+    def __init__(self, p: float=0.9, max_scale:float =1.0, min_scale=0.8, preserve_size=False, rng_seed=None):
+        super().__init__(p=p, rng_seed=rng_seed)
+        self.min_scale = min_scale
+        self.max_scale = max_scale
+        self.preserve_size = preserve_size
+
+    def _get_aug(self):
+        scale = self._rng.uniform(self.min_scale, self.max_scale)
+        self.applied_record["random_scale"] = scale
+        return scale
+
+    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
+        if self._p is None or self._rng.rand() < self._p:
+            scale = self._get_aug()
+            orig_h, orig_w = images.shape[-2], images.shape[-1]
+            new_h, new_w = int(orig_h * scale), int(orig_w * scale)
+
+            # Resize images and masks
+            images_scaled = F.interpolate(images, size=(new_h, new_w), mode="bilinear", align_corners=False)
+            masks_scaled = F.interpolate(masks.float(), size=(new_h, new_w), mode="nearest").long()
+
+            if self.preserve_size:
+                pad_h = max(orig_h - new_h, 0)
+                pad_w = max(orig_w - new_w, 0)
+                pad = [pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2]  # left, right, top, bottom
+
+                images_scaled = F.pad(images_scaled, pad, mode="constant", value=0)
+                masks_scaled = F.pad(masks_scaled, pad, mode="constant", value=0)
+
+                # If scaled image is larger, crop to original size
+                images_scaled = images_scaled[..., :orig_h, :orig_w]
+                masks_scaled = masks_scaled[..., :orig_h, :orig_w]
+
+            return images_scaled, masks_scaled
+        return images, masks
 
 class PretrainedAugmentations:
     """Augmentation pipeline to get augmented copies of model embeddings."""
@@ -293,7 +329,7 @@ class PretrainedAugmentations:
             RotAugment(degrees=10, rng_seed=rng_seed),
             Rot90Augment(p=0.5, rng_seed=rng_seed),
             AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
-            # add downscaling, up to 0.8
+            RandomScale(rng_seed=rng_seed)
             # ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),
             # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
         ]
@@ -894,9 +930,9 @@ class FeatureExtractor(ABC):
         embeddings = self._load_features()
         
         # try:
-        # t = coords[0][0]
-        # if t > 81:
-        #    self._debug_show_patches(embeddings, masks, coords, patch_idxs)
+        #   t = coords[0][0]
+        #   if t > 81:
+        #       self._debug_show_patches(embeddings, masks, coords, patch_idxs)
         # except IndexError:
         #   pass
 
