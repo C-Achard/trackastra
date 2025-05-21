@@ -888,7 +888,8 @@ def get_features(
     logger.info(f"Extracting features from {len(detections)} detections")
     if features_type in ["none", "wrfeat"]:
         if n_workers > 0:
-            features = joblib.Parallel(n_jobs=n_workers)(
+            logger.info(f"Using {n_workers} processes for feature extraction")
+            features = joblib.Parallel(n_jobs=n_workers, backend="multiprocessing")(
                 joblib.delayed(WRFeatures.from_mask_img)(
                     # New axis for time component
                     mask=mask[np.newaxis, ...],
