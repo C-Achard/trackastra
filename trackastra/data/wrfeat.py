@@ -225,7 +225,7 @@ class WRFeatures:
             _df["timepoint"] = i + t_start
 
             if use_border_dist:
-                _df["border_dist"] = _border_dist(y)
+                _df["border_dist"] = _border_dist_fast(y)
 
             dfs.append(_df)
         df = pd.concat(dfs)
@@ -889,11 +889,11 @@ def get_features(
     if features_type in ["none", "wrfeat"]:
         if n_workers > 0:
             logger.info(f"Using {n_workers} processes for feature extraction")
-            features = joblib.Parallel(n_jobs=n_workers, backend="multiprocessing")(
+            features = joblib.Parallel(n_jobs=n_workers, backend="loky")(
                 joblib.delayed(WRFeatures.from_mask_img)(
                     # New axis for time component
-                    mask=mask[np.newaxis, ...],
-                    img=img[np.newaxis, ...],
+                    mask=mask[np.newaxis, ...].copy(),
+                    img=img[np.newaxis, ...].copy(),
                     t_start=t,
                 )
                 for t, (mask, img) in progbar_class(
