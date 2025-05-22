@@ -116,11 +116,11 @@ class WRFeatures:
 
     @property
     def features_stacked(self):
-        if not self.features:
+        if not self.features or (len(self.features) == 1 and "pretrained_feats" in self.features):
             # logger.warning("No features to stack")
             return None
         feats = np.concatenate(
-            [v for k, v in self.features.items()],
+            [v for k, v in self.features.items() if k != "pretrained_feats"],
             axis=-1
         )
         # raise if any NaNs in features

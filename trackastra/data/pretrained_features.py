@@ -282,8 +282,9 @@ class ElasticTransform(BaseAugmentation):
         self.applied_record["elastic_transform"] = (alpha, sigma)
         return transforms.ElasticTransform(alpha=alpha, sigma=sigma)
 
+
 class RandomScale(BaseAugmentation):
-    def __init__(self, p: float=0.9, max_scale:float =1.0, min_scale=0.8, preserve_size=False, rng_seed=None):
+    def __init__(self, p: float = 0.9, max_scale: float = 1.0, min_scale=0.8, preserve_size=False, rng_seed=None):
         super().__init__(p=p, rng_seed=rng_seed)
         self.min_scale = min_scale
         self.max_scale = max_scale
@@ -318,6 +319,7 @@ class RandomScale(BaseAugmentation):
 
             return images_scaled, masks_scaled
         return images, masks
+
 
 class PretrainedAugmentations:
     """Augmentation pipeline to get augmented copies of model embeddings."""
@@ -421,6 +423,7 @@ class PretrainedFeatureExtractorConfig:
     device: str | None = None
     feat_dim: int = None
     additional_features: str | None = None  # for regionprops features
+    additional_feat_dim: int = 0  # for regionprops features
     n_augmented_copies: int = 0  # number of augmented copies to create
     pca_components: int = None  # for PCA reduction of the features
     pca_preprocessor_path: str | Path = None  # for PCA preprocessor path
@@ -452,8 +455,8 @@ class PretrainedFeatureExtractorConfig:
         else:
             self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
         if self.additional_features is not None:
-            self.feat_dim += CTCData.FEATURES_DIMENSIONS[self.additional_features][2] + 1  # TODO if this ever accepts 3D data this will be incorrect
-            # TODO also figure out why the dimensions require +1 to be correct
+            # TODO if this ever accepts 3D data this will be incorrect
+            self.additional_feat_dim = CTCData.FEATURES_DIMENSIONS[self.additional_features][2]  
             if self.additional_features not in CTCData.FEATURES_DIMENSIONS:
                 raise ValueError(f"Additional feature {self.additional_features} is not valid.")
         if self.pca_components is not None:

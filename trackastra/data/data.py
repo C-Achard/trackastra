@@ -158,7 +158,7 @@ class CTCData(Dataset):
             2: 0,
             3: 0,
         }
-        # "pretrained_feats" -> defined by PretrainedFeatureExtractorConfig.feat_dim
+        # "pretrained_feats":{ # -> defined by PretrainedFeatureExtractorConfig.feat_dim
     }
     VALID_FEATURES: ClassVar = {
         "none",
@@ -375,19 +375,20 @@ class CTCData(Dataset):
     
     @property
     def feat_dim(self):
-        match self.features:
-            case "pretrained_feats" | "pretrained_feats_aug":
-                try:
-                    return self.FEATURES_DIMENSIONS[self.features]
-                except KeyError:
-                    self.update_pretrained_feat_dim(self.pretrained_config)
-                    return self.FEATURES_DIMENSIONS[self.features]
-            case _:
-                return self.FEATURES_DIMENSIONS[self.features][self.ndim]
+        if self.pretrained_config is None:
+            return self.FEATURES_DIMENSIONS[self.features][self.ndim]
+        else:
+            return self.pretrained_config.additional_feat_dim
     
     @property
     def pretrained_config(self):
         return self._pretrained_config
+    
+    @property
+    def pretrained_feat_dim(self):
+        if self._pretrained_config is None:
+            return 0
+        return self._pretrained_config.feat_dim
     
     @pretrained_config.setter
     def pretrained_config(self, config: PretrainedFeatureExtractorConfig):
@@ -1438,7 +1439,7 @@ class CTCData(Dataset):
                 image_shape = img.shape
             pretrained_features = CTCData.rotate_features(
                 pretrained_features, coords, image_shape,
-                n_rot_dims=self.feat_dim // 2,
+                n_rot_dims=self.pretrained_feat_dim // 2,
             )
 
         res = dict(
@@ -2079,8 +2080,11 @@ class CTCDataAugPretrainedFeats(CTCData):
                 metadata_json = f[str(random_aug_choice)].attrs["metadata"]
                 metadata = json.loads(metadata_json)
                 image_shape = metadata["image_shape"]
-            pretrained_features = CTCData.rotate_features(pretrained_features, coords, image_shape, n_rot_dims=self.feat_dim // 2)
-        
+            pretrained_features = CTCData.rotate_features(
+                pretrained_features, coords, image_shape,
+                n_rot_dims=self.pretrained_feat_dim // 2
+            )
+
         res = dict(
             features=features,
             pretrained_features=pretrained_features,
@@ -2307,13 +2311,12 @@ def collate_sequence_padding(batch):
         "labels": 0,  # Not needed, remove for speed.
         "timepoints": -1,  # There are real timepoints with t=0. -1 for distinction from that.
     }
-    # TODO fix should affect batch not normal keys, values are never None
     actual_keys = {
-        k: v for k, v in normal_keys.items() if k in batch[0] and v is not None
+        k: v for k, v in normal_keys.items() if k in batch[0] and batch[0][k] is not None
     }
-    none_keys = {
-        k: v for k, v in normal_keys.items() if v is None and k in batch[0]
-    }
+    none_keys = [
+        k for k in normal_keys.keys() if k in batch[0] and batch[0][k] is None
+    ]
     n_pads = tuple(n_max_len - s for s in lens)
     batch_new = dict(
         (
@@ -2322,11 +2325,10 @@ def collate_sequence_padding(batch):
                 [pad_tensor(x[k], n_max=n_max_len, value=v) for x in batch], dim=0
             ),
         )
-        for k, v in actual_keys.items() if x[k] is not None
+        for k, v in actual_keys.items()
     )
-    for k, v in none_keys.items():
-        assert v is None
-        batch_new[k] = v
+    for k in none_keys:
+        batch_new[k] = None
     batch_new["assoc_matrix"] = torch.stack(
         [
             pad_tensor(

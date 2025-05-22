@@ -236,6 +236,7 @@ class TrackingTransformer(torch.nn.Module):
             coords_proj_dims = (1 + coord_dim) * pos_embed_per_dim
         
         feats_proj_dims = feat_dim * feat_embed_per_dim
+        
         self.proj = nn.Linear(
             coords_proj_dims + feats_proj_dims,
             d_model
@@ -291,7 +292,7 @@ class TrackingTransformer(torch.nn.Module):
             # add relu
             self.ptfeat_proj = nn.Sequential(
                 nn.Linear(pretrained_feat_dim, 64),
-                nn.ReLU(),
+                nn.ELU(),
             ) 
             self.ptfeat_norm = nn.LayerNorm(64)
         else:
@@ -334,7 +335,7 @@ class TrackingTransformer(torch.nn.Module):
         if not self._disable_all_coords:
             pos = self.pos_embed(coords)
         
-        with torch.amp.autocast(enabled=False, device_type=features.device.type):
+        with torch.amp.autocast(enabled=False, device_type=coords.device.type):
             if features is None or features.numel() == 0:
                 if self._disable_all_coords:
                     raise ValueError("features is None and all coords are disabled. Please enable at least one of the two.")

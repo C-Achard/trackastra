@@ -220,9 +220,14 @@ class WrappedLightningModule(pl.LightningModule):
         padding_mask = batch["padding_mask"]
         padding_mask = padding_mask.bool()
         
-        if torch.any(torch.isnan(feats)):
-            nan_dims = torch.any(torch.isnan(feats), dim=-1)
-            raise ValueError("NaN in features in dimensions: ", nan_dims)
+        if feats is not None:
+            if torch.any(torch.isnan(feats)):
+                nan_dims = torch.any(torch.isnan(feats), dim=-1)
+                raise ValueError("NaN in features in dimensions: ", nan_dims)
+        if pretrained_feats is not None:
+            if torch.any(torch.isnan(pretrained_feats)):
+                nan_dims = torch.any(torch.isnan(pretrained_feats), dim=-1)
+                raise ValueError("NaN in pretrained features in dimensions: ", nan_dims)
         if torch.any(torch.isnan(coords)):
             raise ValueError("NaN in coords")
 
@@ -900,6 +905,7 @@ def train(args):
         dummy_model = TrackingTransformer(
             coord_dim=dummy_data.ndim,
             feat_dim=dummy_data.feat_dim,
+            pretrained_feat_dim=dummy_data.pretrained_feat_dim,
             d_model=args.d_model,
             pos_embed_per_dim=args.pos_embed_per_dim,
             feat_embed_per_dim=args.feat_embed_per_dim,
@@ -1037,7 +1043,7 @@ def train(args):
     else:
         # feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12 
         if args.features == "pretrained_feats" or args.features == "pretrained_feats_aug":  # TODO find a way to truly automate this
-            feat_dim = pretrained_config.feat_dim
+            feat_dim = pretrained_config.additional_feat_dim
         else:
             feat_dim = CTCData.get_feat_dim(args.features, args.ndim)
         model = TrackingTransformer(
@@ -1045,6 +1051,7 @@ def train(args):
             coord_dim=args.ndim,
             # feat_dim=datasets["train"].datasets[0].feat_dim,
             feat_dim=feat_dim,
+            pretrained_feat_dim=pretrained_config.feat_dim,
             d_model=args.d_model,
             pos_embed_per_dim=args.pos_embed_per_dim,
             feat_embed_per_dim=args.feat_embed_per_dim,
