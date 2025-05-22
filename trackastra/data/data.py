@@ -1270,7 +1270,8 @@ class CTCData(Dataset):
                     for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
                 ]
                 for wrf in features:
-                    if np.any(np.isnan(wrf.features_stacked)):
+                    feats = wrf.features_stacked
+                    if feats is not None and np.any(np.isnan(wrf.features_stacked)):
                         raise ValueError("NaN in features")
             elif self.features == "wrfeat":
                 features = joblib.Parallel(n_jobs=8)(
@@ -1399,10 +1400,15 @@ class CTCData(Dataset):
         # features = self.pca_preprocessor.transform(feat.features_stacked)
         # else:
         features = feat.features_stacked
-        features = torch.from_numpy(features).float()
+        if features is not None:
+            features = torch.from_numpy(features).float()
         
         labels = torch.from_numpy(feat.labels).long()
         timepoints = torch.from_numpy(feat.timepoints).long()
+        
+        pretrained_features = feat.pretrained_feats
+        if pretrained_features is not None:
+            pretrained_features = torch.from_numpy(pretrained_features).float()
     
         if self.max_tokens and len(timepoints) > self.max_tokens:
             time_incs = np.where(timepoints - np.roll(timepoints, 1))[0]
@@ -1410,7 +1416,10 @@ class CTCData(Dataset):
             timepoints = timepoints[:n_elems]
             labels = labels[:n_elems]
             coords0 = coords0[:n_elems]
-            features = features[:n_elems]
+            if features is not None:
+                features = features[:n_elems]
+            if pretrained_features is not None:
+                pretrained_features = pretrained_features[:n_elems]
             assoc_matrix = assoc_matrix[:n_elems, :n_elems]
             logger.debug(
                 f"Clipped window of size {timepoints[n_elems - 1] - timepoints.min()}"
@@ -1427,18 +1436,14 @@ class CTCData(Dataset):
                 image_shape = img._shape
             else:
                 image_shape = img.shape
-            if self.pretrained_config.additional_features is not None:
-                skip = CTCData.FEATURES_DIMENSIONS[self.pretrained_config.additional_features][2] + 1
-            else:
-                skip = 0
-            features = CTCData.rotate_features(
-                features, coords, image_shape,
+            pretrained_features = CTCData.rotate_features(
+                pretrained_features, coords, image_shape,
                 n_rot_dims=self.feat_dim // 2,
-                skip_first=skip
             )
 
         res = dict(
             features=features,
+            pretrained_features=pretrained_features,
             coords0=coords0,
             coords=coords,
             assoc_matrix=assoc_matrix,
@@ -1454,10 +1459,17 @@ class CTCData(Dataset):
             mask = torch.from_numpy(mask.astype(int)).long()
             res["mask"] = mask
         
-        if torch.any(torch.isnan(features)):
-            raise ValueError("NaN in features")
-        elif torch.any(torch.all(features == 0, dim=-1)):
-            raise ValueError("Empty features")
+        if features is not None:
+            if torch.any(torch.isnan(features)):
+                raise ValueError("NaN in features")
+            elif torch.any(torch.all(features == 0, dim=-1)):
+                raise ValueError("Empty features")
+            
+        if pretrained_features is not None:
+            if torch.any(torch.isnan(pretrained_features)):
+                raise ValueError("NaN in pretrained features")
+            elif torch.any(torch.all(pretrained_features == 0, dim=-1)):
+                raise ValueError("Empty pretrained features")
         
         return res
 
@@ -1566,7 +1578,10 @@ class CTCData(Dataset):
         cos = torch.cos(angles)
         sin = torch.sin(angles)
         # Interleave features for rotation
-        features_rot = features[:, skip_first:n_rot_dims + skip_first].view(N, -1, 2)
+        try:
+            features_rot = features[:, skip_first:n_rot_dims + skip_first].view(N, -1, 2)
+        except Exception:
+            breakpoint()
         x_feat, y_feat = features_rot[..., 0], features_rot[..., 1]
         x_rot = x_feat * cos[:, ::2] - y_feat * sin[:, ::2]
         y_rot = x_feat * sin[:, ::2] + y_feat * cos[:, ::2]
@@ -1985,11 +2000,9 @@ class CTCDataAugPretrainedFeats(CTCData):
             # 0 is original, 1 to n_augs are the augmented versions
             coords = track["coords"][random_aug_choice]
             features = track["features"][random_aug_choice]
-            
             assoc_matrix = track["assoc_matrix"]
             labels = track["labels"]
-            # img = track["img"]
-            # mask = track["mask"]
+
             timepoints = track["timepoints"]
             min_time = track["t1"]
         
@@ -2012,15 +2025,17 @@ class CTCDataAugPretrainedFeats(CTCData):
         augmented_data, assoc_matrix = self._augment_item(augment_wrfeat, labels, timepoints, assoc_matrix)
         if not isinstance(augmented_data, wrfeat.WRAugPretrainedFeatures):
             raise ValueError("Augmented data is not a WRAugPretrainedFeatures. Check that augmenter return type is correct.")
-        features, coords, timepoints, labels = augmented_data.to_window()
+        features, pretrained_features, coords, timepoints, labels = augmented_data.to_window()
         
         shapes = [
             len(labels),
             len(timepoints),
             len(coords),
-            len(features),
+            len(pretrained_features),
             len(assoc_matrix),
         ]
+        if features is not None:
+            shapes.append(len(features))
         if len(np.unique(shapes)) != 1:
             raise ValueError(f"Shape mismatch: {shapes} (labs/timepoints/coords/features)")
         
@@ -2036,14 +2051,19 @@ class CTCDataAugPretrainedFeats(CTCData):
             timepoints = timepoints[:n_elems]
             labels = labels[:n_elems]
             coords = coords[:n_elems]
-            features = features[:n_elems]
+            if features is not None:
+                features = features[:n_elems]
+            if pretrained_features is not None:
+                pretrained_features = pretrained_features[:n_elems]
             assoc_matrix = assoc_matrix[:n_elems, :n_elems]
             logger.info(
                 f"Clipped window of size {timepoints[n_elems - 1] - timepoints.min()}"
             )
             
         coords0 = torch.from_numpy(coords).float()
-        features = torch.from_numpy(features).float() if isinstance(features, np.ndarray) else features.float()
+        if features is not None:
+            features = torch.from_numpy(features).float()
+        pretrained_features = torch.from_numpy(pretrained_features).float()
         assoc_matrix = torch.from_numpy(assoc_matrix.copy()).float()
         labels = torch.from_numpy(labels).long()
         timepoints = torch.from_numpy(timepoints).long()
@@ -2059,10 +2079,11 @@ class CTCDataAugPretrainedFeats(CTCData):
                 metadata_json = f[str(random_aug_choice)].attrs["metadata"]
                 metadata = json.loads(metadata_json)
                 image_shape = metadata["image_shape"]
-            features = CTCData.rotate_features(features, coords, image_shape, n_rot_dims=self.feat_dim // 2)
+            pretrained_features = CTCData.rotate_features(pretrained_features, coords, image_shape, n_rot_dims=self.feat_dim // 2)
         
         res = dict(
             features=features,
+            pretrained_features=pretrained_features,
             coords0=coords0,
             coords=coords,
             assoc_matrix=assoc_matrix,
@@ -2282,8 +2303,16 @@ def collate_sequence_padding(batch):
     normal_keys = {
         "coords": 0,
         "features": 0,
+        "pretrained_features": 0,
         "labels": 0,  # Not needed, remove for speed.
         "timepoints": -1,  # There are real timepoints with t=0. -1 for distinction from that.
+    }
+    # TODO fix should affect batch not normal keys, values are never None
+    actual_keys = {
+        k: v for k, v in normal_keys.items() if k in batch[0] and v is not None
+    }
+    none_keys = {
+        k: v for k, v in normal_keys.items() if v is None and k in batch[0]
     }
     n_pads = tuple(n_max_len - s for s in lens)
     batch_new = dict(
@@ -2293,8 +2322,11 @@ def collate_sequence_padding(batch):
                 [pad_tensor(x[k], n_max=n_max_len, value=v) for x in batch], dim=0
             ),
         )
-        for k, v in normal_keys.items()
+        for k, v in actual_keys.items() if x[k] is not None
     )
+    for k, v in none_keys.items():
+        assert v is None
+        batch_new[k] = v
     batch_new["assoc_matrix"] = torch.stack(
         [
             pad_tensor(

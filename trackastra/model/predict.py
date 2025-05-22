@@ -25,6 +25,7 @@ def predict(batch, model):
         _type_: _description_
     """
     feats = torch.from_numpy(batch["features"])
+    pretrained_feats = torch.from_numpy(batch["pretrained_features"])
     coords = torch.from_numpy(batch["coords"])
     timepoints = torch.from_numpy(batch["timepoints"]).long()
     # Hack that assumes that all parameters of a model are on the same device
@@ -36,7 +37,7 @@ def predict(batch, model):
     # Concat timepoints to coordinates
     coords = torch.cat((timepoints.unsqueeze(2).float(), coords), dim=2)
     with torch.no_grad():
-        A = model(coords, features=feats)
+        A = model(coords, features=feats, pretrained_features=pretrained_feats)
         A = model.normalize_output(A, timepoints, coords)
 
         # # Spatially far entries should not influence the causal normalization
@@ -122,7 +123,6 @@ def predict_windows(
         else:
             A = pred_func_override(batch) 
         
-
         dt = timepoints[None, :] - timepoints[:, None]
         time_mask = np.logical_and(dt <= delta_t, dt > 0)
         A[~time_mask] = 0

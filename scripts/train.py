@@ -213,6 +213,7 @@ class WrappedLightningModule(pl.LightningModule):
     def _common_step(self, batch, eps=torch.finfo(torch.float32).eps):
         # torch.autograd.set_detect_anomaly(True)
         feats = batch["features"]
+        pretrained_feats = batch["pretrained_features"]
         coords = batch["coords"]
         A = batch["assoc_matrix"]
         timepoints = batch["timepoints"]
@@ -225,7 +226,7 @@ class WrappedLightningModule(pl.LightningModule):
         if torch.any(torch.isnan(coords)):
             raise ValueError("NaN in coords")
 
-        A_pred = self.model(coords, feats, padding_mask=padding_mask)
+        A_pred = self.model(coords, feats, pretrained_feats, padding_mask=padding_mask)
         
         # remove inf values that might happen due to float16 numerics
         A_pred.clamp_(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)

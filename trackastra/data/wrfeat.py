@@ -104,7 +104,7 @@ class WRFeatures:
         else:
             self.features = features.copy()
         self.timepoints = timepoints
-
+        
     def __repr__(self):
         s = (
             f"WindowRegionFeatures(ndim={self.ndim}, nregions={len(self.labels)},"
@@ -117,11 +117,21 @@ class WRFeatures:
     @property
     def features_stacked(self):
         if not self.features:
-            logger.warning("No features to stack")
+            # logger.warning("No features to stack")
             return None
-        feats = np.concatenate([v for k, v in self.features.items()], axis=-1)
+        feats = np.concatenate(
+            [v for k, v in self.features.items()],
+            axis=-1
+        )
         # raise if any NaNs in features
         return feats
+
+    @property
+    def pretrained_feats(self):
+        # for compatibility with WRPretrainedFeatures
+        if "pretrained_feats" in self.features:
+            return self.features["pretrained_feats"]
+        return None
 
     def __len__(self):
         return len(self.labels)
@@ -265,6 +275,24 @@ class WRPretrainedFeatures(WRFeatures):
             
         super().__init__(coords, labels, timepoints, features)
         self.additional_properties = additional_properties
+        
+    @property
+    def features_stacked(self):
+        if not self.features or (len(self.features) == 1 and "pretrained_feats" in self.features):
+            # logger.warning("No features to stack")
+            return None
+        feats = np.concatenate(
+            [v for k, v in self.features.items() if k != "pretrained_feats"],
+            axis=-1
+        )
+        # raise if any NaNs in features
+        return feats
+    
+    @property
+    def pretrained_feats(self):
+        if "pretrained_feats" in self.features:
+            return self.features["pretrained_feats"]
+        return None
     
     @classmethod
     def from_mask_img(
@@ -344,10 +372,16 @@ class WRAugPretrainedFeatures(WRPretrainedFeatures):
     def to_window(self):
         """Convert the features to a window."""
         coords = np.concatenate((self.timepoints[:, None], self.coords), axis=-1)
-        feats = np.concatenate(
-            [v for _, v in self.features.items()], axis=-1
-        )
-        return feats, coords, self.timepoints, self.labels
+
+        if len(self.features) == 1 and "pretrained_feats" in self.features.keys():
+            feats = None
+        else:
+            feats = np.concatenate(
+                [v for k, v in self.features.items() if k != "pretrained_feats"],
+                axis=-1
+            )
+        pretrained_feats = self.features["pretrained_feats"]
+        return feats, pretrained_feats, coords, self.timepoints, self.labels
     
     def to_dict(self):
         """Convert the features to a dictionary."""
