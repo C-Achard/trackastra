@@ -223,6 +223,9 @@ class TrackingTransformer(torch.nn.Module):
             disable_all_coords=disable_all_coords,
             expand_features=expand_features,
         )
+        
+        # TODO temp attr, add as config arg
+        self.reduced_pretrained_feat_dim = 64
 
         self._disable_xy_coords = disable_xy_coords
         self._disable_all_coords = disable_all_coords
@@ -238,7 +241,7 @@ class TrackingTransformer(torch.nn.Module):
         feats_proj_dims = feat_dim * feat_embed_per_dim
         
         self.proj = nn.Linear(
-            coords_proj_dims + feats_proj_dims,
+            coords_proj_dims + feats_proj_dims + self.reduced_pretrained_feat_dim,
             d_model
         )
         self.norm = nn.LayerNorm(d_model)
@@ -291,10 +294,10 @@ class TrackingTransformer(torch.nn.Module):
         if pretrained_feat_dim > 0:
             # add relu
             self.ptfeat_proj = nn.Sequential(
-                nn.Linear(pretrained_feat_dim, 64),
+                nn.Linear(pretrained_feat_dim, self.reduced_pretrained_feat_dim),
                 nn.ELU(),
             ) 
-            self.ptfeat_norm = nn.LayerNorm(64)
+            self.ptfeat_norm = nn.LayerNorm(self.reduced_pretrained_feat_dim)
         else:
             self.ptfeat_proj = nn.Identity()
             self.ptfeat_norm = nn.Identity()
@@ -336,22 +339,35 @@ class TrackingTransformer(torch.nn.Module):
             pos = self.pos_embed(coords)
         
         with torch.amp.autocast(enabled=False, device_type=coords.device.type):
-            if features is None or features.numel() == 0:
+            # Determine if we have any features to use
+            has_features = features is not None and features.numel() > 0
+            has_pretrained = pretrained_features is not None and pretrained_features.numel() > 0
+
+            if not has_features and not has_pretrained:
                 if self._disable_all_coords:
                     raise ValueError("features is None and all coords are disabled. Please enable at least one of the two.")
-                features = pos
+                features_out = pos
             else:
-                features = self.feat_embed(features)
-                # add pretrained features
-                if self.config["pretrained_feat_dim"] > 0:
-                    pt_features = self.ptfeat_proj(pretrained_features)                    
+                # Start with features if present, else None
+                features_out = self.feat_embed(features) if has_features else None
+
+                # Add pretrained features if configured
+                if self.config["pretrained_feat_dim"] > 0 and has_pretrained:
+                    pt_features = self.ptfeat_proj(pretrained_features)
                     pt_features = self.ptfeat_norm(pt_features)
-                    features = torch.cat((features, pt_features), dim=-1)
-                # add encoded coords
+                    if features_out is not None:
+                        features_out = torch.cat((features_out, pt_features), dim=-1)
+                    else:
+                        features_out = pt_features
+
+                # Add encoded coords if not disabled
                 if not self._disable_all_coords:
-                    features = torch.cat((pos, features), axis=-1)
-        
-            features = self.proj(features)
+                    if features_out is not None:
+                        features_out = torch.cat((pos, features_out), axis=-1)
+                    else:
+                        features_out = pos
+
+            features = self.proj(features_out)
         # Clamp input when returning to mixed precision
         features = features.clamp(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
         features = self.norm(features)

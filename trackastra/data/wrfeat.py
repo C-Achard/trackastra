@@ -39,16 +39,13 @@ _PROPERTIES = {
         "inertia_tensor",
         "border_dist",
     ),
-    "regionprops_full": (
+    "regionprops_small": (
         "area",
-        "equivalent_diameter_area",
-        "intensity_mean",
-        "intensity_max",
-        "intensity_min",
         "inertia_tensor",
-        "border_dist",
     ),
 }
+DEFAULT_PROPERTIES = "regionprops"
+
 
 
 def _filter_points(
@@ -85,6 +82,20 @@ def _border_dist(mask: np.ndarray, cutoff: float = 5):
 
 class WRFeatures:
     """regionprops features for a windowed track region."""
+    PROPERTIES_DIMS: ClassVar = {
+        "regionprops": {
+            2: 8,
+            3: 12,
+        },
+        "regionprops2": {
+            2: 7,
+            3: 12,
+        },
+        "regionprops_small": {
+            2: 5,
+            3: 9,
+        },
+    }
 
     def __init__(
         self,
@@ -92,6 +103,7 @@ class WRFeatures:
         labels: np.ndarray,
         timepoints: np.ndarray,
         features: OrderedDict[np.ndarray],
+        properties: str = DEFAULT_PROPERTIES,
     ):
         self.ndim = coords.shape[-1]
         if self.ndim not in (2, 3):
@@ -104,6 +116,8 @@ class WRFeatures:
         else:
             self.features = features.copy()
         self.timepoints = timepoints
+        
+        self.properties = properties
         
     def __repr__(self):
         s = (
@@ -141,6 +155,13 @@ class WRFeatures:
             return self.features[key]
         else:
             raise KeyError(f"Key {key} not found in features")
+        
+    @property
+    def features_dims(self):
+        """Returns the number of features for each property."""
+        if self.properties not in self.PROPERTIES_DIMS:
+            raise ValueError(f"Unknown feature type {self.properties}")
+        return self.PROPERTIES_DIMS[self.properties][self.ndim]
 
     @classmethod
     def concat(cls, feats: Sequence[WRFeatures]) -> WRFeatures:
@@ -225,7 +246,7 @@ class WRFeatures:
         cls,
         mask: np.ndarray,
         img: np.ndarray,
-        properties: str = "regionprops",
+        properties: str = DEFAULT_PROPERTIES,
         t_start: int = 0,
     ):
         df, coords, labels, timepoints, properties = cls.get_regionprops_features(
@@ -248,7 +269,7 @@ class WRFeatures:
         )
 
         return cls(
-            coords=coords, labels=labels, timepoints=timepoints, features=features
+            coords=coords, labels=labels, timepoints=timepoints, features=features, properties=properties
         )
 
 

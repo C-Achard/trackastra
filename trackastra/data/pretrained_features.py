@@ -456,7 +456,9 @@ class PretrainedFeatureExtractorConfig:
             self.feat_dim = AVAILABLE_PRETRAINED_BACKBONES[self.model_name]["feat_dim"]
         if self.additional_features is not None:
             # TODO if this ever accepts 3D data this will be incorrect
-            self.additional_feat_dim = CTCData.FEATURES_DIMENSIONS[self.additional_features][2]  
+            self.additional_feat_dim = wrfeat.WRFeatures.PROPERTIES_DIMS[
+                wrfeat.DEFAULT_PROPERTIES
+            ][2]
             if self.additional_features not in CTCData.FEATURES_DIMENSIONS:
                 raise ValueError(f"Additional feature {self.additional_features} is not valid.")
         if self.pca_components is not None:

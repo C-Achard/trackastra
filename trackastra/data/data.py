@@ -130,10 +130,6 @@ class CTCData(Dataset):
     """Cell Tracking Challenge data loader."""
     # Amount of feature per mode per dimension
     FEATURES_DIMENSIONS: ClassVar = {
-        "wrfeat": {
-            2: 8,
-            3: 12,
-        },
         "regionprops": {
             2: 7,
             3: 11,
@@ -158,6 +154,7 @@ class CTCData(Dataset):
             2: 0,
             3: 0,
         }
+        # "wrfeat" -> defined by wrfeat
         # "pretrained_feats":{ # -> defined by PretrainedFeatureExtractorConfig.feat_dim
     }
     VALID_FEATURES: ClassVar = {
@@ -260,11 +257,12 @@ class CTCData(Dataset):
         self.features = features
         self.rotate_feats = rotate_features
 
-        if features not in self.VALID_FEATURES and features not in _PROPERTIES[self._ndim]:
-            raise ValueError(
-                f"'{features}' not one of the supported {self._ndim}D features"
-                f" {tuple(_PROPERTIES[self._ndim].keys())}"
-            )
+        if features not in self.VALID_FEATURES:
+            if features not in _PROPERTIES[self._ndim] and features != "wrfeat":
+                raise ValueError(
+                    f"'{features}' not one of the supported {self._ndim}D features"
+                    f" {tuple(_PROPERTIES[self._ndim].keys())}"
+                )
         
         if features == "pretrained_feats" or features == "pretrained_feats_aug":
             try:
@@ -377,6 +375,10 @@ class CTCData(Dataset):
     def feat_dim(self):
         if self.pretrained_config is None:
             return self.FEATURES_DIMENSIONS[self.features][self.ndim]
+        elif self.features == "wrfeat":
+            return wrfeat.WRFeatures.PROPERTIES_DIMS[
+                wrfeat.DEFAULT_PROPERTIES
+            ][self.ndim]
         else:
             return self.pretrained_config.additional_feat_dim
     
