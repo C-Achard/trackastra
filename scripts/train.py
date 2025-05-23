@@ -233,6 +233,13 @@ class WrappedLightningModule(pl.LightningModule):
 
         A_pred = self.model(coords, feats, pretrained_feats, padding_mask=padding_mask)
         
+        if self.model.norms: # if dict is not empty, log each entry to wandb
+            for key, value in self.model.norms.items():
+                # check wandb runner is initialized
+                self.log_dict(
+                    {f"norms/{key}": value}, on_step=True, on_epoch=False, sync_dist=True               
+                )
+
         # remove inf values that might happen due to float16 numerics
         A_pred.clamp_(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
         # above call might interfere with backward as it is an inplace operation
@@ -1173,7 +1180,7 @@ def parse_train_args():
         is_config_file=True,
         help="config file path",
         # default="configs/vanvliet.yaml",
-        default=str(Path("./scripts/example_config.yaml").resolve()),
+        default=str(Path("/home/achard/trackastra/scripts/example_config.yaml").resolve()),
     )
     parser.add_argument("-o", "--outdir", type=str, default="runs")
     parser.add_argument("--name", type=str, help="Name to append to timestamp")

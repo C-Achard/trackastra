@@ -457,9 +457,9 @@ class PretrainedFeatureExtractorConfig:
         if self.additional_features is not None:
             # TODO if this ever accepts 3D data this will be incorrect
             self.additional_feat_dim = wrfeat.WRFeatures.PROPERTIES_DIMS[
-                wrfeat.DEFAULT_PROPERTIES
+                self.additional_features
             ][2]
-            if self.additional_features not in CTCData.FEATURES_DIMENSIONS:
+            if self.additional_features not in wrfeat._PROPERTIES:
                 raise ValueError(f"Additional feature {self.additional_features} is not valid.")
         if self.pca_components is not None:
             self.feat_dim = self.pca_components
@@ -936,7 +936,7 @@ class FeatureExtractor(ABC):
         
         # try:
         #   t = coords[0][0]
-        #   if t > 81:
+        #   if t == 3:
         #       self._debug_show_patches(embeddings, masks, coords, patch_idxs)
         # except IndexError:
         #   pass
