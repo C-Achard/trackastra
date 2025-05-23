@@ -1006,16 +1006,9 @@ class FeatureExtractor(ABC):
             feats[i] = r
 
         return feats
-    
+        
     def _agg_patches_exact(self, masks, timepoints, labels, agg_fn=torch.mean):
-        """Averages the embeddings of all patches that strictly belong to the mask.
-
-        Args:
-            - masks (np.ndarray): Masks where each region has a unique label (t x H x W).
-            - timepoints (np.ndarray): For each region, contains the corresponding timepoint. (n_regions)
-            - labels (np.ndarray): Unique labels of the regions. (n_regions)
-            - agg_fn (callable): Aggregation function to use for averaging the embeddings. Default is torch.mean.
-        """
+        """Aggregates the embeddings of all patches that strictly belong to the mask."""
         try:
             n_regions = len(timepoints)
             timepoints_shifted = timepoints - timepoints.min()
@@ -1027,41 +1020,39 @@ class FeatureExtractor(ABC):
 
         feats = torch.zeros(n_regions, self.hidden_state_size, device=self.device)
         embeddings = self._load_features()
+        embeddings = embeddings.view(
+            -1, self.final_grid_size[0], self.final_grid_size[1], self.hidden_state_size
+        )
+
+        _T, H, W = masks.shape
+        grid_H, grid_W = self.final_grid_size
+        scale_y = grid_H / H
+        scale_x = grid_W / W
 
         def process_region(i, t):
-            # Extract the mask for the specific region
-            try:
-                region_mask = masks[t] == labels[i]
-                if not np.any(region_mask):
-                    logger.warning(f"No pixels found for region {labels[i]} at timepoint {t}.")
-                    return torch.zeros(self.hidden_state_size, device=self.device)
+            mask = masks[t] == labels[i]
+            if not np.any(mask):
+                logger.warning(f"No pixels found for region {labels[i]} at timepoint {t}.")
+                return torch.zeros(self.hidden_state_size, device=self.device)
 
-                # Map the mask pixels to the embedding grid
-                patch_coords = np.argwhere(region_mask)  # Get (row, col) indices of mask pixels
-                scale_x = self.final_grid_size[0] / masks.shape[-2]
-                scale_y = self.final_grid_size[1] / masks.shape[-1]
-                patch_x = (patch_coords[:, 1] * scale_x).astype(int)
-                patch_y = (patch_coords[:, 0] * scale_y).astype(int)
-
-                # Extract embeddings for the mask pixels
-                patch_indices = patch_y * self.final_grid_size[1] + patch_x
-                patch_embeddings = embeddings[t][patch_indices]
-            except IndexError as e:
-                breakpoint()
-                raise e
-
-            # Compute the mean of the embeddings
+            y_idxs, x_idxs = np.nonzero(mask)
+            grid_y = np.clip((y_idxs * scale_y).astype(int), 0, grid_H - 1)
+            grid_x = np.clip((x_idxs * scale_x).astype(int), 0, grid_W - 1)
+            patch_embeddings = embeddings[t][grid_y, grid_x]
+            if patch_embeddings.shape[0] == 0:
+                logger.warning(f"No mapped pixels for region {labels[i]} at timepoint {t}.")
+                return torch.zeros(self.hidden_state_size, device=self.device)
             return agg_fn(patch_embeddings, dim=0)
 
+        # Parallel processing
         res = joblib.Parallel(n_jobs=8, backend="threading")(
             joblib.delayed(process_region)(i, t) for i, t in enumerate(timepoints_shifted)
         )
-
         for i, r in enumerate(res):
             feats[i] = r
 
         return feats
-
+    
     def _exact_patch(self, imgs, masks, coords):
         """Uses the image patch centered on the detection for embedding."""
         raise NotImplementedError()
