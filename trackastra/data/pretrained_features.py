@@ -25,7 +25,7 @@ from transformers import (
     SamProcessor,
 )
 
-from trackastra.data import CTCData, wrfeat
+from trackastra.data import wrfeat
 
 try:
     from micro_sam.util import get_sam_model as get_microsam_model
@@ -939,7 +939,7 @@ class FeatureExtractor(ABC):
         #   if t == 3:
         #       self._debug_show_patches(embeddings, masks, coords, patch_idxs)
         # except IndexError:
-        #   pass
+        #   logger.debug("No timepoint found in coords.")
 
         # logger.debug(f"Embeddings shape: {embeddings.shape}")
         embeddings_dict = {t: embeddings[t] for t in unique_timepoints}
@@ -1088,7 +1088,7 @@ class FeatureExtractor(ABC):
                     raise RuntimeError(f"NaN values found in features loaded from {load_path}.")
                 # check feature shape consistency
                 if features.shape[1] != self.final_grid_size[0] * self.final_grid_size[1] or features.shape[2] != self.hidden_state_size:
-                    logger.error(f"Saved embeddings found, but shape {features.shape} does not match expected shape {('n_frames', self.final_grid_size**2, self.hidden_state_size)}.")
+                    logger.error(f"Saved embeddings found, but shape {features.shape} does not match expected shape {('n_frames', self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size)}.")
                     logger.error("Embeddings will be recomputed.")
                     return None
                 self.embeddings = torch.tensor(features).to(self.device)

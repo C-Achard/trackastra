@@ -1974,8 +1974,8 @@ class CTCDataAugPretrainedFeats(CTCData):
                 labels = labels[idx]
                 timepoints = timepoints[idx]
                 assoc_matrix = assoc_matrix[idx][:, idx]
-            else:
-                logger.debug("Skipping cropping")
+            # else:
+            #     logger.debug("Skipping cropping")
         
         if self.augmenter is not None:
             item = self.augmenter(item)
