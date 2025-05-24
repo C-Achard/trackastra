@@ -1805,7 +1805,6 @@ class CTCDataAugPretrainedFeats(CTCData):
             self._aug_embeds_h5 = self.augmented_feature_extractor.get_save_path()
         
             _w = self._build_windows(
-                det_masks,
                 det_ts,
                 det_labels,
                 det_gt_matching,
@@ -1814,15 +1813,15 @@ class CTCDataAugPretrainedFeats(CTCData):
             all_windows.extend(_w)
             
         return all_windows
-        
-    def _build_windows(self, det_masks, ts, labels, matching, augmented_dict):
+
+    def _build_windows(self, ts, labels, matching, augmented_dict):
         windows = []
         window_size = self.window_size
-        n_frames = len(det_masks)
+        n_frames = len(np.unique(ts))
         n_entries = self.n_augs + 1
         # augmented_dict structure :
         #  - aug_id:
-        #     - metadata: dict, record of the applied augmentations
+        #     - metadata: dict, record of the applied augmentations and other metadata
         #    - data: the data for aug_id
         #         - t: frame between 0 and n_frames
         #           - lab: label of the detection
@@ -1842,8 +1841,6 @@ class CTCDataAugPretrainedFeats(CTCData):
             _ts = ts[idx]
             _labels = labels[idx]
             
-            # _coords should be a dict with n_aug keys, each with a list of coords for each label
-            # {n_aug: [np.ndarray(3)]} with list of len n_labels
             _coords = {aug_id: [] for aug_id in range(n_entries)}
             _features = {aug_id: {} for aug_id in range(n_entries)}
             for aug_id in range(n_entries):

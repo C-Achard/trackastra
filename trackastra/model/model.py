@@ -225,7 +225,7 @@ class TrackingTransformer(torch.nn.Module):
         )
         
         # TODO temp attr, add as config arg
-        self.reduced_pretrained_feat_dim = 64
+        self.reduced_pretrained_feat_dim = 256
         self._return_norms = True
         self.norms = {}
 
@@ -294,10 +294,8 @@ class TrackingTransformer(torch.nn.Module):
             self.feat_embed = nn.Identity()
         
         if pretrained_feat_dim > 0:
-            # add relu
             self.ptfeat_proj = nn.Sequential(
                 nn.Linear(pretrained_feat_dim, self.reduced_pretrained_feat_dim),
-                # nn.ELU(),
             ) 
             self.ptfeat_norm = nn.LayerNorm(self.reduced_pretrained_feat_dim)
         else:
@@ -322,6 +320,7 @@ class TrackingTransformer(torch.nn.Module):
     def forward(self, coords, features=None, pretrained_features=None, padding_mask=None):
         assert coords.ndim == 3 and coords.shape[-1] in (3, 4)
         _B, _N, _D = coords.shape
+        device = coords.device.type
 
         # disable padded coords (such that it doesnt affect minimum)
         if padding_mask is not None:
@@ -334,18 +333,19 @@ class TrackingTransformer(torch.nn.Module):
 
         if self._disable_xy_coords:
             coords = coords[:, :, :1]
-        elif self._disable_all_coords:
-            coords = None
 
         if not self._disable_all_coords:
             pos = self.pos_embed(coords)
+        else:
+            pos = None
             
         if self._return_norms:
             self.norms = {}
-            self.norms["pos_embed"] = pos.norm(dim=-1).detach().cpu().mean().item()
-            self.norms["coords"] = coords.norm(dim=-1).detach().cpu().mean().item()
+            if not self._disable_all_coords:
+                self.norms["pos_embed"] = pos.norm(dim=-1).detach().cpu().mean().item()
+                self.norms["coords"] = coords.norm(dim=-1).detach().cpu().mean().item()
         
-        with torch.amp.autocast(enabled=False, device_type=coords.device.type):
+        with torch.amp.autocast(enabled=False, device_type=device):
             # Determine if we have any features to use
             has_features = features is not None and features.numel() > 0
             has_pretrained = pretrained_features is not None and pretrained_features.numel() > 0

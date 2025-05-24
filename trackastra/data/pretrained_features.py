@@ -320,18 +320,29 @@ class RandomScale(BaseAugmentation):
             return images_scaled, masks_scaled
         return images, masks
 
+class IdentityAugment(BaseAugmentation):
+    """Identity augmentation for debugging purposes."""
+    def __init__(self, p: float = 1.0, rng_seed=None):
+        super().__init__(p=p, rng_seed=rng_seed)
+
+    def _get_aug(self):
+        return transforms.Lambda(lambda x: x)
+
+    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
+        return images, masks
 
 class PretrainedAugmentations:
     """Augmentation pipeline to get augmented copies of model embeddings."""
     def __init__(self, rng_seed=None, normalize=True):
         self.aug_record = {}
         self.aug_list = [
-            BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
-            FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
-            RotAugment(degrees=10, rng_seed=rng_seed),
-            Rot90Augment(p=0.5, rng_seed=rng_seed),
-            AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
-            RandomScale(rng_seed=rng_seed)
+            IdentityAugment(rng_seed=rng_seed), # debugging
+            # BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
+            # FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
+            # RotAugment(degrees=10, rng_seed=rng_seed),
+            # Rot90Augment(p=0.5, rng_seed=rng_seed),
+            # AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
+            # RandomScale(rng_seed=rng_seed),
             # ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),
             # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
         ]
@@ -373,9 +384,9 @@ class PretrainedAugmentations:
             except Exception as e:
                 raise ValueError(f"Failed to convert masks to tensor: {e}")
         
-        normalize = normalize if normalize is not None else self.normalize
-        if normalize:
-            images = percentile_norm(images)
+        # normalize = normalize if normalize is not None else self.normalize
+        # if normalize:
+        #     images = percentile_norm(images)
             
         return images, masks
     

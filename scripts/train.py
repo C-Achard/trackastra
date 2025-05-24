@@ -395,6 +395,7 @@ class WrappedLightningModule(pl.LightningModule):
             on_step=False,
             on_epoch=True,
             sync_dist=True,
+            batch_size=batch["coords"].shape[0],
         )
 
         # self.train_loss.append(loss)
@@ -437,6 +438,7 @@ class WrappedLightningModule(pl.LightningModule):
             on_step=False,
             on_epoch=True,
             sync_dist=True,
+            batch_size=batch["coords"].shape[0],
         )
 
         # self.val_loss.append(loss)
@@ -1164,7 +1166,7 @@ def train(args):
     print(f"Time elapsed:     {(default_timer() - t) / 60:.02f} min")
     print(f"CPU Memory used:  {(_process_memory() - memory) / 1e9:.2f} GB")
     print(f"GPU Memory used : {torch.cuda.max_memory_reserved() / 1e9:.02f} GB")
-
+    
     return locals()
 
 
@@ -1421,6 +1423,8 @@ def parse_train_args():
 
 
 if __name__ == "__main__":
+    import os
+    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     args = parse_train_args()
 
     # from torch.profiler import profile, record_function, ProfilerActivity
