@@ -335,15 +335,17 @@ class IdentityAugment(BaseAugmentation):
 
 class PretrainedAugmentations:
     """Augmentation pipeline to get augmented copies of model embeddings."""
+    default_normalize = percentile_norm
+    
     def __init__(self, rng_seed=None, normalize=True):
         self.aug_record = {}
         self.aug_list = [
             # IdentityAugment(rng_seed=rng_seed), # debugging
-            # BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
+            BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
             FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
             # RotAugment(degrees=10, rng_seed=rng_seed),
             Rot90Augment(p=0.5, rng_seed=rng_seed),
-            # AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
+            AddGaussianNoise(mean=0.0, std=0.05, rng_seed=rng_seed),
             RandomScale(rng_seed=rng_seed),
             # ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),
             # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
@@ -353,10 +355,10 @@ class PretrainedAugmentations:
         self.normalize = normalize
         self.image_shape = None
 
-    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask, normalize=True) -> tuple[torch.Tensor, tv_tensors.Mask, dict]:
+    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask, normalize_func=None) -> tuple[torch.Tensor, tv_tensors.Mask, dict]:
         """Applies the augmentations to the images."""
-        images, masks = self.preprocess(images, masks, normalize=normalize)
-        
+        images, masks = self.preprocess(images, masks, normalize_func=normalize_func)
+
         self._rng.shuffle(self.aug_list)
         
         self._aug = transforms.Compose(self.aug_list)
@@ -371,7 +373,7 @@ class PretrainedAugmentations:
         # NOTE : most models do require 3 channels, but this will be done in FeatureExtractor, so the output is squeezed
         return images.squeeze(), masks.squeeze(), self.gather_records()
     
-    def preprocess(self, images, masks, normalize=None):
+    def preprocess(self, images, masks, normalize_func=None):
         if not len(images.shape) == 3:
             raise ValueError(f"Images must be tensor of shape (T, H, W), got {len(images.shape)}D tensor.")
         if not len(masks.shape) == 3:
@@ -388,9 +390,10 @@ class PretrainedAugmentations:
             except Exception as e:
                 raise ValueError(f"Failed to convert masks to tensor: {e}")
         
-        # normalize = normalize if normalize is not None else self.normalize
-        # if normalize:
-        #     images = percentile_norm(images)
+        if normalize_func is not None:
+            if not callable(normalize_func):
+                raise ValueError("normalize_func must be a callable function.")
+            images = normalize_func(images)
             
         return images, masks
     
@@ -543,7 +546,7 @@ class FeatureExtractor(ABC):
         self.orig_image_size = image_size
         self.orig_n_channels = 1
         # Batch options and preprocessing
-        self.percentile_norm = True
+        self.do_normalize = True
         self.rescale_batches = False
         self.channel_first = True
         self.batch_return_type: Literal["list[np.ndarray]", "np.ndarray", "torch.Tensor"] = "np.ndarray"
@@ -623,8 +626,8 @@ class FeatureExtractor(ABC):
         backbone = cls._available_backbones[model_name]["class"]
         backbone.model_name = model_name
         model = backbone(
-            image_shape,
-            save_path, 
+            image_size=image_shape,
+            save_path=save_path, 
             device=device, 
             mode=mode,
             model_folder=model_folder,
@@ -682,6 +685,8 @@ class FeatureExtractor(ABC):
                 self.input_size[0] // self.final_grid_size[0],
                 self.input_size[1] // self.final_grid_size[1],
             )
+            if self.model_patch_size[0] <= 0 or self.model_patch_size[1] <= 0:
+                raise ValueError("Model patch size must be greater than 0.")
 
     def compute_region_features(
             self, 
@@ -781,7 +786,7 @@ class FeatureExtractor(ABC):
         """Extracts embeddings from the model."""
         pass
     
-    def _normalize_batch(self, b):
+    def normalize_batch(self, b):
         b = percentile_norm(b)
         if self.rescale_batches:
             b = b * 255.0
@@ -839,8 +844,8 @@ class FeatureExtractor(ABC):
             batch = np.expand_dims(images[i:end], axis=1)  # (B, C, H, W)
             
             # required by AutoImageProcessor (PIL Image needs [0, 1] range)
-            if self.percentile_norm:
-                batch = self._normalize_batch(batch)
+            if self.do_normalize:
+                batch = self.normalize_batch(batch)
             timepoints = range(i, end)
             if self.n_channels > 1:  # repeat channels if needed
                 if self.orig_n_channels > 1 and self.orig_n_channels != self.n_channels:
@@ -862,6 +867,7 @@ class FeatureExtractor(ABC):
         return patch_coords
     
     def _find_nearest_cell(self, patch_coords):
+        """Finds the nearest cell in the grid for each patch coordinate."""
         x_idxs = patch_coords[:, 1] // self.model_patch_size[0]
         y_idxs = patch_coords[:, 2] // self.model_patch_size[1]
         patch_idxs = np.column_stack((patch_coords[:, 0], x_idxs, y_idxs)).astype(int)
@@ -1143,6 +1149,7 @@ class FeatureExtractorAugWrapper:
         self.extractor.force_recompute = True
         self.extractor.do_save = False  # do not save intermediate features (augmented image embeddings)
         # instead, we will save the augmented features + coordinates on a per-object basis in an HDF5 file
+        self.extractor.do_normalize = False 
 
         # self.save_path = None
         self.force_recompute = force_recompute
@@ -1176,7 +1183,7 @@ class FeatureExtractorAugWrapper:
         if self._debug_view is not None:
             embs = embs.cpu().numpy()
             logger.debug(f"Embeddings shape: {embs.shape}")
-            embs = embs.reshape(-1, self.extractor.final_grid_size, self.extractor.final_grid_size, self.extractor.hidden_state_size)
+            embs = embs.reshape(-1, self.extractor.final_grid_size[0], self.extractor.final_grid_size[1], self.extractor.hidden_state_size)
             embs = np.moveaxis(embs, 3, 0)
             self._debug_view.add_image(embs, name="Embeddings", colormap="inferno")
             self._debug_view.add_image(images.cpu().numpy(), name="Images", colormap="viridis")
@@ -1194,12 +1201,12 @@ class FeatureExtractorAugWrapper:
     
     def _compute_original(self, images, masks):
         """Computes the original features for the images and masks."""
-        images, masks = self.aug_pipeline.preprocess(images, masks)
+        images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_batch)
         orig_feat_dict = self._compute(images, masks)
         return orig_feat_dict
     
     def _compute_augmented(self, images, masks):
-        images, masks = self.aug_pipeline.preprocess(images, masks)
+        images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_batch)
         aug_images, aug_masks, aug_record = self.aug_pipeline(images, masks)
         
         # check for NaNs
@@ -1209,8 +1216,10 @@ class FeatureExtractorAugWrapper:
         im_shape, masks_shape = aug_images.shape, aug_masks.shape
         assert im_shape == masks_shape, f"Augmented images shape {im_shape} does not match augmented masks shape {masks_shape}."
         if im_shape[-2:] != self.extractor.orig_image_size:
-            if isinstance(self.extractor, TAPFeatures):
-                self.extractor.final_grid_size = (im_shape[-2], im_shape[-1]) # TAP features have same dims as images 
+            # if isinstance(self.extractor, TAPFeatures):
+            # self.extractor.final_grid_size = (im_shape[-2], im_shape[-1]) # TAP features have same dims as images 
+            if im_shape[-1] == 0 or im_shape[-2] == 0:
+                raise ValueError(f"Augmented images have invalid shape {im_shape}. Cannot extract features.")
             self.extractor.orig_image_size = im_shape[-2:]
             
         aug_feat_dict = self._compute(aug_images, aug_masks)
@@ -1253,7 +1262,6 @@ class FeatureExtractorAugWrapper:
         if "0" not in existing_aug_ids:
             self._save_features(0, self.all_aug_features["0"])
         
-        self.aug_pipeline.normalize = False  # do not re-normalize the images
         for n in range(self.n_aug):
             if str(f"{n + 1}") in existing_aug_ids:
                 logger.info(f"Augmentation {n + 1} already exists. Skipping computation.")
@@ -1338,6 +1346,13 @@ class FeatureExtractorAugWrapper:
         if not path.exists():
             raise FileNotFoundError(f"Path {path} does not exist.")
         
+        if additional_props is not None:
+            required_features = wrfeat._PROPERTIES[additional_props]
+            if len(required_features) == 0:
+                required_features = "pretrained_feats"
+            else:
+                required_features += ("pretrained_feats", )
+        
         all_data = {}
         with h5py.File(path, "r") as f:
             logger.debug(f"Exisiting groups : {list(f.keys())}")
@@ -1358,11 +1373,6 @@ class FeatureExtractorAugWrapper:
                         if "features" in lab_group:
                             for key, dataset in lab_group["features"].items():
                                 if additional_props is not None:
-                                    required_features = wrfeat._PROPERTIES[additional_props]
-                                    if len(required_features) == 0:
-                                        required_features = "pretrained_feats"
-                                    else:
-                                        required_features += ("pretrained_feats", )
                                     if key in required_features:
                                         features[key] = np.array(dataset)
                                 else:
@@ -1688,6 +1698,22 @@ class TAPFeatures(FeatureExtractor):
         self.rescale_batches = False
     
         # TODO clear full model from memory
+    
+    @property
+    def final_grid_size(self) -> tuple[int, int]:
+        return self._final_grid_size
+    
+    @final_grid_size.setter
+    def final_grid_size(self, value: tuple[int, int]):
+        """Sets the final grid size and updates the model's input size."""
+        self._final_grid_size = value
+        self.orig_image_size = value
+        self.input_size = value
+        self.model.input_size = value
+        self.model_patch_size = (1, 1)
+        
+    def _set_model_patch_size(self):
+        pass
         
     @staticmethod
     def _load_model_from_path(model_folder: str):
@@ -1697,16 +1723,25 @@ class TAPFeatures(FeatureExtractor):
         model = TimeArrowNet.from_folder(model_folder, from_state_dict=True)
         feat_dim = model.bb_n_feat
         return model, feat_dim
+    
+    def normalize_batch(self, b):
+        images_batch = tap_normalize(b)
+        images_batch = torch.from_numpy(images_batch).to(torch.float32)  # T, H, W
+        return images_batch
         
     def _prepare_batches(self, images):
-        images_batch = tap_normalize(images)
-        images_batch = torch.from_numpy(images_batch).to(torch.float32)  # T, H, W
-        images_batch = images_batch.unsqueeze(1)  # T, C, H, W
-        return images_batch
+        if self.do_normalize:
+            images = self.normalize_batch(images)
+        images = images.unsqueeze(1)  # T, C, H, W
+        return images
 
     def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
         """Extracts embeddings from the model."""
         features = []
+        ts = images.shape[0]
+        im_shape = tuple(images.shape[-2:])
+        self.orig_image_size = im_shape
+        self.final_grid_size = im_shape
         with torch.no_grad():
             for i in tqdm(range(0, len(images), self.batch_size), desc="Computing TAP features"):
                 batch = images[i : i + self.batch_size]
@@ -1720,11 +1755,14 @@ class TAPFeatures(FeatureExtractor):
             torch.cuda.empty_cache()
         
         features = features.moveaxis(1, 3)  # (T, H, W, N)
-        features = features.reshape(-1, self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size)  # (T, grid_size**2, N)
+        features = features.reshape(ts, self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size)  # (T, grid_size**2, N)
         return features
     
     def precompute_image_embeddings(self, images):
         # missing = self._check_missing_embeddings()
+        if images.shape[-2:] != self.orig_image_size:
+            self.orig_image_size = images.shape[-2:]
+            self.final_grid_size = images.shape[-2:]
         batches = self._prepare_batches(images)
         self.embeddings = self._run_model(batches)
         # self._save_features(self.embeddings)
@@ -1759,35 +1797,48 @@ class CellposeSAMFeatures(FeatureExtractor):
         self.channel_first = False
         self.rescale_batches = False
         
+    def normalize_batch(self, images_batch):
+        batch = torch.zeros(
+            (*tuple(images_batch.shape), self.n_channels),  # add a channel dimension
+            dtype=torch.float32
+        )
+        for n, b in enumerate(images_batch):
+            if isinstance(b, torch.Tensor):
+                b = b.cpu().numpy()
+            b_ = cp_transforms.convert_image(
+                b,
+                channel_axis=None,
+                z_axis=None,
+                do_3D=False
+            )
+            b_ = cp_transforms.normalize_img(b_)
+            b_ = torch.from_numpy(b_).to(torch.float32)
+            batch[n] = b_
+        logger.debug(f"Cellpose SAM batch shape: {batch.shape}")
+        return batch[..., 0]  # keep only a single copy of the channel
+        
     def _prepare_batches(self, images):
         for i in range(0, len(images), self.batch_size):
             end = i + self.batch_size
             end = min(end, len(images))
-            img_batch = images[i:end]  # (B, H, W)
+            batch = images[i:end]  # (B, H, W)
             ts = range(i, end)
-            batch = np.zeros((len(img_batch), self.orig_image_size[0], self.orig_image_size[1], 3), dtype=np.float32)
-            for n, b in enumerate(img_batch):
-                b_ = cp_transforms.convert_image(
-                    b,
-                    channel_axis=None,
-                    z_axis=None,
-                    do_3D=False
-                )
-                b_ = cp_transforms.normalize_img(b_)
-                batch[n] = b_
-            batch = np.stack(batch, axis=0)  # (B, H, W, C)
-            batch = np.moveaxis(batch, 3, 1)  # (B, C, H, W)
-
+            if self.do_normalize:
+                batch = self.normalize_batch(batch)
+            if len(batch.shape) == 3:
+                batch = batch.unsqueeze(1)
+                batch = batch.repeat(1, 3, 1, 1)
+            batch = batch.to(self.device)
             yield ts, batch
-            
+
     def _run_model(self, images_batch: np.ndarray) -> torch.Tensor:
         embeddings = []
         
         with torch.no_grad():
-            b = torch.from_numpy(images_batch).to(self.device)
-            b = F.interpolate(b, size=(self.input_size[0], self.input_size[1]), mode="bilinear", align_corners=False)
-
-            x = self.model.encoder.patch_embed(b.to(torch.float32))
+            
+            b = F.interpolate(images_batch, size=(self.input_size[0], self.input_size[1]), mode="bilinear", align_corners=False)
+            
+            x = self.model.encoder.patch_embed(b)
             if self.model.encoder.pos_embed is not None:
                 x = x + self.model.encoder.pos_embed
             for i, blk in enumerate(self.model.encoder.blocks):
