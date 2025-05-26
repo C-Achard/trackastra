@@ -40,7 +40,7 @@ from trackastra.data.pretrained_features import (
     AVAILABLE_PRETRAINED_BACKBONES,
     PretrainedFeatureExtractorConfig,
 )
-from trackastra.data.wrfeat import _PROPERTIES
+from trackastra.data.wrfeat import _PROPERTIES, WRFeatures, DEFAULT_PROPERTIES
 from trackastra.model import TrackingTransformer
 from trackastra.utils import (
     blockwise_causal_norm,
@@ -213,7 +213,10 @@ class WrappedLightningModule(pl.LightningModule):
     def _common_step(self, batch, eps=torch.finfo(torch.float32).eps):
         # torch.autograd.set_detect_anomaly(True)
         feats = batch["features"]
-        pretrained_feats = batch["pretrained_features"]
+        try:
+            pretrained_feats = batch["pretrained_features"]
+        except KeyError:
+            pretrained_feats = None
         coords = batch["coords"]
         A = batch["assoc_matrix"]
         timepoints = batch["timepoints"]
@@ -929,7 +932,6 @@ def train(args):
             causal_norm=args.causal_norm,
             disable_xy_coords=args.disable_xy_coords,
             disable_all_coords=args.disable_all_coords,
-            expand_features=args.expand_additional_feats,
         )
 
         dummy_model_lightning = WrappedLightningModule(
@@ -1053,14 +1055,19 @@ def train(args):
         # feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12 
         if args.features == "pretrained_feats" or args.features == "pretrained_feats_aug":  # TODO find a way to truly automate this
             feat_dim = pretrained_config.additional_feat_dim
+        elif args.features == "wrfeat":
+            feat_dim = WRFeatures.PROPERTIES_DIMS[DEFAULT_PROPERTIES][args.ndim]
         else:
             feat_dim = CTCData.get_feat_dim(args.features, args.ndim)
+            
+        pretrained_feat_dim = 0 if pretrained_config is None else pretrained_config.feat_dim
+            
         model = TrackingTransformer(
             # coord_dim=datasets["train"].datasets[0].ndim,
             coord_dim=args.ndim,
             # feat_dim=datasets["train"].datasets[0].feat_dim,
             feat_dim=feat_dim,
-            pretrained_feat_dim=pretrained_config.feat_dim,
+            pretrained_feat_dim=pretrained_feat_dim,
             d_model=args.d_model,
             pos_embed_per_dim=args.pos_embed_per_dim,
             feat_embed_per_dim=args.feat_embed_per_dim,
@@ -1075,7 +1082,6 @@ def train(args):
             causal_norm=args.causal_norm,
             disable_xy_coords=args.disable_xy_coords,
             disable_all_coords=args.disable_all_coords,
-            expand_features=args.expand_additional_feats,
         )
 
     model_lightning = WrappedLightningModule(
@@ -1371,12 +1377,6 @@ def parse_train_args():
         type=int,
         default=None,
         help="Number of augmentations to use for pretrained features. Only valid if features is pretrained_feats_aug",
-    )
-    parser.add_argument(
-        "--expand_additional_feats",
-        type=int,
-        default=None,
-        help="If not None, applies the feat_embed_per_dim only for the n first specified feature dimensions. The rest are not expanded.",
     )
     parser.add_argument(
         "--disable_xy_coords",
