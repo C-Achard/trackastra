@@ -339,11 +339,11 @@ class PretrainedAugmentations:
         self.aug_record = {}
         self.aug_list = [
             # IdentityAugment(rng_seed=rng_seed), # debugging
-            BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
+            # BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
             FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
             # RotAugment(degrees=10, rng_seed=rng_seed),
             Rot90Augment(p=0.5, rng_seed=rng_seed),
-            AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
+            # AddGaussianNoise(mean=0.0, std=0.1, rng_seed=rng_seed),
             RandomScale(rng_seed=rng_seed),
             # ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),
             # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
@@ -365,6 +365,8 @@ class PretrainedAugmentations:
         masks = torch.unsqueeze(masks, dim=1)  # add channel dimension (T, C, H, W) for augmentation
         
         images, masks = self._aug(images, masks)
+        if torch.isnan(images).any() or torch.isnan(masks).any():
+            raise RuntimeError("NaN values found in images or masks after augmentation.")
         self.image_shape = images.shape
         # NOTE : most models do require 3 channels, but this will be done in FeatureExtractor, so the output is squeezed
         return images.squeeze(), masks.squeeze(), self.gather_records()
@@ -1200,11 +1202,15 @@ class FeatureExtractorAugWrapper:
         images, masks = self.aug_pipeline.preprocess(images, masks)
         aug_images, aug_masks, aug_record = self.aug_pipeline(images, masks)
         
+        # check for NaNs
+        if torch.isnan(aug_images).any() or torch.isnan(aug_masks).any():
+            raise RuntimeError("NaN values found in augmented images or masks.")
+        
         im_shape, masks_shape = aug_images.shape, aug_masks.shape
         assert im_shape == masks_shape, f"Augmented images shape {im_shape} does not match augmented masks shape {masks_shape}."
         if im_shape[-2:] != self.extractor.orig_image_size:
             if isinstance(self.extractor, TAPFeatures):
-                self.extractor.final_grid_size = (im_shape[-2], im_shape[-1])
+                self.extractor.final_grid_size = (im_shape[-2], im_shape[-1]) # TAP features have same dims as images 
             self.extractor.orig_image_size = im_shape[-2:]
             
         aug_feat_dict = self._compute(aug_images, aug_masks)
