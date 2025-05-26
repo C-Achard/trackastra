@@ -1992,7 +1992,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         random_aug_choice = self._rng.integers(0, self.n_augs + 1)
          
         if self.save_windows:
-            coords, features, labels, timepoints, assoc_matrix, min_time = self._sample_from_file(
+            coords, features, labels, timepoints, assoc_matrix, _min_time = self._sample_from_file(
                     n, random_aug_choice
                 )
         else:
@@ -2004,7 +2004,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             labels = track["labels"]
 
             timepoints = track["timepoints"]
-            min_time = track["t1"]
+            track["t1"]
         
         # if return_dense and isinstance(mask, _CompressedArray):
         #     mask = CTCDataAugPretrainedFeats.decompress(mask)
@@ -2043,7 +2043,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             raise ValueError(f"Coords shape mismatch: {coords.shape[-1]} != {self.ndim + 1}")
         
         # coords is already including time, simply remove min_time along the first axis
-        coords[:, 0] -= min_time
+        # coords[:, 0] -= min_time
         
         if self.max_tokens and len(timepoints) > self.max_tokens:
             time_incs = np.where(timepoints - np.roll(timepoints, 1))[0]
