@@ -1992,7 +1992,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         random_aug_choice = self._rng.integers(0, self.n_augs + 1)
          
         if self.save_windows:
-            coords, features, labels, timepoints, assoc_matrix, _min_time = self._sample_from_file(
+            coords, features, labels, timepoints, assoc_matrix, _ = self._sample_from_file(
                     n, random_aug_choice
                 )
         else:
@@ -2004,7 +2004,6 @@ class CTCDataAugPretrainedFeats(CTCData):
             labels = track["labels"]
 
             timepoints = track["timepoints"]
-            track["t1"]
         
         # if return_dense and isinstance(mask, _CompressedArray):
         #     mask = CTCDataAugPretrainedFeats.decompress(mask)
