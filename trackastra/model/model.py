@@ -195,10 +195,9 @@ class TrackingTransformer(torch.nn.Module):
         attn_dist_mode: str = "v0",
         disable_xy_coords: bool = False,
         disable_all_coords: bool = False,
-        expand_features: int | None = None
     ):
         super().__init__()
-
+    
         if disable_xy_coords:
             coord_dim = 1
         
@@ -221,17 +220,18 @@ class TrackingTransformer(torch.nn.Module):
             attn_dist_mode=attn_dist_mode,
             disable_xy_coords=disable_xy_coords,
             disable_all_coords=disable_all_coords,
-            expand_features=expand_features,
         )
         
         # TODO temp attr, add as config arg
-        self.reduced_pretrained_feat_dim = 256
+        if pretrained_feat_dim > 0:
+            self.reduced_pretrained_feat_dim = 256
+        else:
+            self.reduced_pretrained_feat_dim = 0
         self._return_norms = True
         self.norms = {}
 
         self._disable_xy_coords = disable_xy_coords
         self._disable_all_coords = disable_all_coords
-        self._expand_features_dim = expand_features
         
         if self._disable_all_coords:
             coords_proj_dims = 0
@@ -348,7 +348,7 @@ class TrackingTransformer(torch.nn.Module):
         with torch.amp.autocast(enabled=False, device_type=device):
             # Determine if we have any features to use
             has_features = features is not None and features.numel() > 0
-            has_pretrained = pretrained_features is not None and pretrained_features.numel() > 0
+            has_pretrained = pretrained_features is not None and pretrained_features.numel() > 0 and self.config["pretrained_feat_dim"] > 0
             
             if self._return_norms:
                 if has_features:
