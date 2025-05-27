@@ -327,6 +327,7 @@ class IdentityAugment(BaseAugmentation):
         super().__init__(p=p, rng_seed=rng_seed)
 
     def _get_aug(self):
+        self.applied_record["identity"] = True
         return transforms.Lambda(lambda x: x)
 
     def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
