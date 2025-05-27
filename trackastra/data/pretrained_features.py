@@ -1199,6 +1199,7 @@ class FeatureExtractorAugWrapper:
         #     t_start=0,
         #     additional_properties=self.extractor.additional_features,
         # )
+        
         features = [
             wrfeat.WRAugPretrainedFeatures.from_mask_img(
                 img=img[np.newaxis], 
@@ -1209,9 +1210,7 @@ class FeatureExtractorAugWrapper:
             )
             for t, (mask, img) in enumerate(zip(masks, images))
         ]
-        features_dict = {}
-        for f in features:
-            features_dict.update(f.to_dict())
+        features_dict = {t: v for f in features for t, v in f.to_dict().items()}
         return features_dict
     
     def _compute_original(self, images, masks):
