@@ -1181,6 +1181,7 @@ class FeatureExtractorAugWrapper:
     def _compute(self, images, masks):
         """Computes the features for the images and masks."""
         embs = self.extractor.precompute_image_embeddings(images)
+        
         if self._debug_view is not None:
             embs = embs.cpu().numpy()
             logger.debug(f"Embeddings shape: {embs.shape}")
@@ -1191,14 +1192,27 @@ class FeatureExtractorAugWrapper:
             self._debug_view.add_labels(masks.cpu().numpy(), name="Masks")
 
         images, masks = images.cpu().numpy(), masks.cpu().numpy()
-        features = wrfeat.WRAugPretrainedFeatures.from_mask_img(
-            img=images,
-            mask=masks,
-            feature_extractor=self.extractor,
-            t_start=0,
-            additional_properties=self.extractor.additional_features,
-        )
-        return features.to_dict()
+        # features = wrfeat.WRAugPretrainedFeatures.from_mask_img(
+        #     img=images,
+        #     mask=masks,
+        #     feature_extractor=self.extractor,
+        #     t_start=0,
+        #     additional_properties=self.extractor.additional_features,
+        # )
+        features = [
+            wrfeat.WRAugPretrainedFeatures.from_mask_img(
+                img=img[np.newaxis], 
+                mask=mask[np.newaxis], 
+                feature_extractor=self.extractor, 
+                t_start=t, 
+                additional_properties=self.extractor.additional_features
+            )
+            for t, (mask, img) in enumerate(zip(masks, images))
+        ]
+        features_dict = {}
+        for f in features:
+            features_dict.update(f.to_dict())
+        return features_dict
     
     def _compute_original(self, images, masks):
         """Computes the original features for the images and masks."""
