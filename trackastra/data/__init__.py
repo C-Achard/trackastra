@@ -14,5 +14,10 @@ from .distributed import (
     BalancedDistributedSampler,
 )
 from .example_data import example_data_bacteria, example_data_fluo_3d, example_data_hela
-from .utils import filter_track_df, load_tiff_timeseries, load_tracklet_links
+from .utils import (
+    filter_track_df,
+    load_tiff_timeseries,
+    load_tracklet_links,
+    make_hashable,
+)
 from .wrfeat import WRFeatures, build_windows, get_features

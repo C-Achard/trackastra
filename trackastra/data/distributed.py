@@ -6,7 +6,7 @@ import logging
 import pickle
 from collections.abc import Iterable
 from copy import deepcopy
-from pathlib import Path, WindowsPath
+from pathlib import Path
 from timeit import default_timer
 
 import numpy as np
@@ -22,10 +22,10 @@ from torch.utils.data import (
 
 from trackastra.data.pretrained_features import (
     EmbeddingsPCACompression,
-    PretrainedFeatureExtractorConfig,
 )
 
 from .data import CTCData, CTCDataAugPretrainedFeats, determine_ctc_class
+from .utils import make_hashable
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -33,19 +33,6 @@ logger.setLevel(logging.INFO)
 
 def cache_class(dataset_kwargs, cachedir=None):
     """A simple file cache for CTCData."""
-
-    def make_hashable(obj):
-        if isinstance(obj, tuple | list):
-            return tuple(make_hashable(e) for e in obj)
-        elif isinstance(obj, Path | WindowsPath):
-            return obj.as_posix()
-        elif isinstance(obj, dict):
-            return tuple(sorted((k, make_hashable(v)) for k, v in obj.items()))
-        elif isinstance(obj, PretrainedFeatureExtractorConfig):
-            cfg_dict = obj.to_dict()
-            return make_hashable(cfg_dict)
-        else:
-            return obj
 
     def hash_args_kwargs(*args, **kwargs):
         hashable_args = tuple(make_hashable(arg) for arg in args)

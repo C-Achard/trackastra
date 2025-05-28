@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections.abc import Sequence
@@ -36,9 +37,10 @@ from trackastra.data.features import (
     extract_features_regionprops,
 )
 from trackastra.data.matching import matching
-
-# from ..utils import blockwise_sum, normalize
+from trackastra.data.pretrained_augmentations import PretrainedAugmentations
 from trackastra.utils import blockwise_sum, masks2properties, normalize
+
+from .utils import make_hashable
 
 logger = logging.getLogger(__name__)
 # logger.setLevel(logging.INFO)
@@ -357,9 +359,40 @@ class CTCData(Dataset):
 
     def _init_features(self):
         if self.features == "wrfeat" or self.features == "pretrained_feats":
-            self.windows = self._load_wrfeat()
+            self.windows = self._load_windows()
         else:
             self.windows = self._load()
+    
+    @property
+    def config(self):
+        return {
+            "root": str(self.root),
+            "ndim": self.ndim,
+            "use_gt": self.use_gt,
+            "detection_folders": self.detection_folders,
+            "window_size": self.window_size,
+            "max_tokens": self.max_tokens,
+            "slice_pct": self.slice_pct,
+            "downscale_spatial": self.downscale_spatial,
+            "downscale_temporal": self.downscale_temporal,
+            "augment": self.augment_level,
+            "features": self.features,
+            "sanity_dist": self.sanity_dist,
+            "crop_size": self.crop_size,
+            "return_dense": self.return_dense,
+            "compress": self.compress,
+            "pretrained_config": (
+                self.pretrained_config.to_dict() if self.pretrained_config else None
+            ),
+            "rotate_features": self.rotate_feats,
+        }
+    
+    @property
+    def config_hash(self):
+        """Returns a hash of the configuration."""
+        cfg = make_hashable(self.config)
+        config_str = json.dumps(cfg, sort_keys=True)
+        return hashlib.sha256(config_str.encode()).hexdigest()
     
     @property
     def ndim(self):
@@ -462,7 +495,7 @@ class CTCData(Dataset):
         start = default_timer()
 
         if self.features == "wrfeat" or self.features == "pretrained_feats":
-            self.windows = self._load_wrfeat()
+            self.windows = self._load_windows()
         else:
             self.windows = self._load()
 
@@ -1180,7 +1213,7 @@ class CTCData(Dataset):
 
         return augmenter, cropper
 
-    def _load_wrfeat(self):
+    def _load_windows(self):
         # # Load ground truth
         # self.gt_masks, self.gt_track_df = self._load_gt()
         # self.gt_masks = self._check_dimensions(self.gt_masks)
@@ -1599,7 +1632,7 @@ class CTCData(Dataset):
 class CTCDataAugPretrainedFeats(CTCData):
     """CTCData with pretrained features."""
 
-    def __init__(self, pretrained_n_augmentations: int = 3, force_recompute=False, *args, **kwargs):
+    def __init__(self, pretrained_n_augmentations: int = 3, force_recompute=False, aug_pipeline: PretrainedAugmentations = None, *args, **kwargs):
         """Args:
         root (str):
             Folder containing the CTC TRA folder.
@@ -1646,11 +1679,19 @@ class CTCDataAugPretrainedFeats(CTCData):
         self.n_augs = pretrained_n_augmentations
         self.force_recompute = force_recompute
         
-        self.pretrained_feats_augmenter = None
+        from trackastra.data.pretrained_augmentations import PretrainedAugmentations
+        self.pretrained_feats_augmenter = PretrainedAugmentations(rng_seed=42) if aug_pipeline is None else aug_pipeline
+        if not isinstance(self.pretrained_feats_augmenter, PretrainedAugmentations):
+            raise ValueError(
+                f"Augmentation pipeline must be of type PretrainedAugmentations, got {type(self.pretrained_feats_augmenter)}"
+            )
+        logger.debug(self.pretrained_feats_augmenter)
         self.augmented_feature_extractor = None
         self.save_windows = True
         
         self._aug_embeds_h5 = None
+        self.delete_augs_after_loading = False
+        self.window_save_path = None
         self._last_selected = None
         self._rng = np.random.default_rng()
         self._len = None
@@ -1660,13 +1701,32 @@ class CTCDataAugPretrainedFeats(CTCData):
         
         logger.info("Loading finished, clearing feature extractors...")
         
-        self.pretrained_feats_augmenter = None
+        # Clear pre-trained model
         self.augmented_feature_extractor = None
+        # Clear windos as they are loaded from disk when __getitem__ is called
         if self.save_windows:
             self._get_ndim_and_nobj(None, self.windows)
             self.windows = None
+        # Clear intermediate data
+        if self.delete_augs_after_loading and self._aug_embeds_h5.exists():
+            try:
+                self._aug_embeds_h5.close()
+            except Exception as e:
+                logger.warning(f"Could not close HDF5 file: {e}")
+            try:
+                self._aug_embeds_h5.unlink()
+                self._aug_embeds_h5 = None
+            except Exception as e:
+                logger.warning(f"Could not delete file {self._aug_embeds_h5}: {e}")
         logger.info("Feature extractors cleared.")
     
+    @property
+    def config(self):
+        cfg = super().config
+        cfg["pretrained_n_augmentations"] = self.n_augs
+        cfg["pretrained_augmentations"] = self.pretrained_feats_augmenter.get_signature()
+        return cfg
+
     @property
     def feat_dim(self):
         return self.pretrained_config.feat_dim
@@ -1725,7 +1785,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         if self.compress:
             self._compress_data() 
     
-    def _load(self):
+    def _load(self):        
         all_windows = []
         imgs = self._prepare_masks_and_imgs(return_orig_imgs=True)
         
@@ -1784,11 +1844,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             self._setup_pretrained_feature_extractor()
             
             # Build augmentation pipeline
-            from trackastra.data.pretrained_features import (
-                FeatureExtractorAugWrapper,
-                PretrainedAugmentations,
-            )
-            self.pretrained_feats_augmenter = PretrainedAugmentations(rng_seed=42)
+            from trackastra.data.pretrained_features import FeatureExtractorAugWrapper
             self.augmented_feature_extractor = FeatureExtractorAugWrapper(
                 extractor=self.feature_extractor,
                 augmenter=self.pretrained_feats_augmenter,
@@ -1801,8 +1857,12 @@ class CTCDataAugPretrainedFeats(CTCData):
                 images=imgs,
                 masks=det_masks,
             )
-            logger.debug(f"AUG DICT keys : {augmented_dict.keys()}")
+            # logger.debug(f"AUG DICT keys : {augmented_dict.keys()}")
             self._aug_embeds_h5 = self.augmented_feature_extractor.get_save_path()
+            self.window_save_path = self._aug_embeds_h5.parent / "windows"
+            self.window_save_path.mkdir(parents=True, exist_ok=True)
+            self.window_save_path = self.window_save_path / f"{self.config_hash}.h5"
+            logger.debug(f"Windows will be saved to {self.window_save_path}")
         
             _w = self._build_windows(
                 det_ts,
@@ -1815,6 +1875,9 @@ class CTCDataAugPretrainedFeats(CTCData):
         return all_windows
 
     def _build_windows(self, ts, labels, matching, augmented_dict):
+        if self._load_windows() is not None:
+            return self.windows
+        
         windows = []
         window_size = self.window_size
         n_frames = len(np.unique(ts))
@@ -1916,12 +1979,12 @@ class CTCDataAugPretrainedFeats(CTCData):
         return windows
     
     def _save_windows(self):
-        if self._aug_embeds_h5 is not None:
+        if self.window_save_path is not None:
             self._len = len(self.windows)
             
-            logger.info(f"Saving windows to {self._aug_embeds_h5}")
+            logger.info(f"Saving windows to {self.window_save_path}")
             mode = "w" if self.force_recompute else "a"
-            with h5py.File(self._aug_embeds_h5, mode) as f:
+            with h5py.File(self.window_save_path, mode) as f:
                 for i, w in enumerate(self.windows):
                     group_name = f"window_{i}"
                     if group_name in f:
@@ -1940,9 +2003,43 @@ class CTCDataAugPretrainedFeats(CTCData):
                     grp.attrs["t1"] = w["t1"]
         else:
             raise ValueError("No augmented embeddings h5 file set. Cannot save windows.")
+        
+    def _load_windows(self):
+        if self.window_save_path.exists() and not self.force_recompute:
+            self.windows = []
+            logger.info(f"Loading windows from {self.window_save_path}")
+            with h5py.File(self.window_save_path, "r") as f:
+                group_names = sorted(  # sort by window number
+                    f.keys(),
+                    key=lambda x: int(x.split("_")[1]) if x.startswith("window_") else x
+                )
+                logger.debug(f"Found {len(group_names)} windows, loading...")
+                for w in group_names:
+                    grp = f[w]
+                    coords = [grp[f"coords_{aug_id}"][()] for aug_id in range(self.n_augs + 1)]
+                    features = {}
+                    for aug_id in range(self.n_augs + 1):
+                        features[aug_id] = {k: grp[f"features_{aug_id}"][k][()] for k in grp[f"features_{aug_id}"].keys()}
+                    labels = grp["labels"][()]
+                    timepoints = grp["timepoints"][()]
+                    assoc_matrix = grp["assoc_matrix"][()]
+                    t1 = grp.attrs["t1"]
+                    
+                    self.windows.append(dict(
+                        coords=coords,
+                        features=features,
+                        labels=labels,
+                        timepoints=timepoints,
+                        assoc_matrix=assoc_matrix,
+                        t1=t1,
+                    ))
+            self._len = len(self.windows)
+            self._get_ndim_and_nobj(None, self.windows)
+            logger.info(f"Loaded {self._len} windows from {self.window_save_path}")
+            return self.windows
 
     def _sample_from_file(self, window_id: int, aug_choice: int = 0):
-        with h5py.File(self._aug_embeds_h5, "r") as f:
+        with h5py.File(self.window_save_path, "r") as f:
             grp = f[f"window_{window_id}"]
             coords = grp[f"coords_{aug_choice}"][()]
             # features = grp[f"feats_{aug_choice}"][()]

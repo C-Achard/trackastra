@@ -4,7 +4,7 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import h5py
 import joblib
@@ -26,6 +26,10 @@ from transformers import (
 )
 
 from trackastra.data import wrfeat
+from trackastra.utils.utils import percentile_norm
+
+if TYPE_CHECKING:
+    from trackastra.data.pretrained_augmentations import PretrainedAugmentations
 
 try:
     from micro_sam.util import get_sam_model as get_microsam_model
@@ -126,288 +130,7 @@ def average_time_decorator(func):
     return wrapper
 
 
-def percentile_norm(b):
-    for i, im in enumerate(b):
-        p1, p99 = np.percentile(im, (1, 99.8))
-        b[i] = (im - p1) / (p99 - p1)
-        b[i] = np.clip(b[i], 0, 1)
-    return b
-
-# Augmentations for pre-trained models ###
-
-
-from torchvision import tv_tensors
-from torchvision.transforms import v2 as transforms
-
-
-class BaseAugmentation(ABC):
-    """Base class for windowed region augmentations."""
-    def __init__(self, p: float = 0.5, rng_seed=None):
-        self._p = p
-        self._rng = np.random.RandomState(rng_seed)
-        self.applied_record = {}
-
-    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
-        if self._p is None or self._rng.rand() < self._p:
-            aug = self._get_aug()
-            return aug(images, masks)
-        return images, masks
-    
-    @abstractmethod
-    def _get_aug(self) -> transforms.Compose:
-        raise NotImplementedError()
-    
-
-class FlipAugment(BaseAugmentation):
-    def __init__(self, p_horizontal: float = 0.5, p_vertical: float = 0.5, rng_seed=None):
-        super().__init__(p=None, rng_seed=rng_seed)
-        self._p_horizontal = p_horizontal
-        self._p_vertical = p_vertical
-    
-    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
-        if self._rng.rand() < self._p_horizontal:
-            images = transforms.functional.hflip(images)
-            masks = transforms.functional.hflip(masks)
-            self.applied_record["hflip"] = True
-        else:
-            self.applied_record["hflip"] = False
-        if self._rng.rand() < self._p_vertical:
-            images = transforms.functional.vflip(images)
-            masks = transforms.functional.vflip(masks)
-            self.applied_record["vflip"] = True
-        else:
-            self.applied_record["vflip"] = False
-        return images, masks
-    
-    def _get_aug(self) -> transforms.Compose:
-        raise NotImplementedError("Use __call__ instead.")
-        
-
-class RotAugment(BaseAugmentation):
-    
-    def __init__(self, p: float = 0.5, degrees: int = 15, rng_seed=None):
-        super().__init__(p, rng_seed=rng_seed)
-        self.degrees = degrees
-    
-    def _get_aug(self):
-        self.applied_record["rotation"] = self.degrees
-        t = transforms.RandomRotation(degrees=self.degrees)
-        return t
-
-
-class Rot90Augment(BaseAugmentation):
-    
-    def __init__(self, p=0.5, rng_seed=None):
-        super().__init__(p, rng_seed=rng_seed)
-        
-    def __call__(self, images, masks):
-        if self._rng.rand() > self._p:
-            return images, masks
-        angle = self._get_aug()
-        images = transforms.functional.rotate(images, angle, expand=True)
-        masks = transforms.functional.rotate(masks, angle, expand=True)
-        return images, masks
-    
-    def _get_aug(self):
-        angle = self._rng.choice([90, 180, 270])
-        self.applied_record["rot90"] = int(angle)
-        return angle
-
-
-class BrightnessJitter(BaseAugmentation):
-    
-    def __init__(self, bright_shift: float = 0.5, contrast_shift: float = 0.5, rng_seed=None):
-        super().__init__(p=None, rng_seed=rng_seed)
-        self._b_shift = bright_shift
-        self._c_shift = contrast_shift
-    
-    def _get_aug(self):
-        if self._b_shift is not None:
-            bright = self._rng.uniform(0, self._b_shift)
-        else:
-            bright = None
-        self.applied_record["brightness_jitter"] = bright
-        if self._c_shift is not None:
-            contrast = self._rng.uniform(0, self._c_shift)
-        else:
-            contrast = None
-        self.applied_record["contrast_jitter"] = contrast
-        return transforms.ColorJitter(brightness=bright, contrast=contrast)
-    
-
-class AddGaussianNoise(BaseAugmentation):
-    def __init__(self, mean: float = 0.0, std: float = 0.1, rng_seed=None):
-        super().__init__(p=None, rng_seed=rng_seed)
-        self.mean = mean
-        self.std = std
-
-    def _get_aug(self):
-        # sample random mean/std
-        mean = self._rng.uniform(-self.mean, self.mean) if self.mean is not None else None
-        std = self._rng.uniform(0, self.std) if self.std is not None else None
-        self.applied_record["gaussian_noise"] = (mean, std)
-        return transforms.Lambda(lambda x: x + torch.randn_like(x) * std + mean)
-
-    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
-        aug = self._get_aug()
-        images = aug(images)
-        return images, masks
-    
-
-class RandomAffine(BaseAugmentation):
-    def __init__(self, degrees: float = 0.0, translate: tuple[float, float] = (0.0, 0.0), scale: tuple[float, float] = (1.0, 1.0), rng_seed=None):
-        super().__init__(p=None, rng_seed=rng_seed)
-        self.degrees = degrees
-        self.translate = translate
-        self.scale = scale
-
-    def _get_aug(self):
-        return transforms.RandomAffine(degrees=self.degrees, translate=self.translate, scale=self.scale)
-
-    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
-        aug = self._get_aug()
-        images, masks = aug(images, masks)
-        return images, masks
-    
-
-class ElasticTransform(BaseAugmentation):
-    def __init__(self, p=0.5, alpha: float = 10.0, sigma: float = 0.5, rng_seed=None):
-        super().__init__(p=p, rng_seed=rng_seed)
-        self.alpha = alpha
-        self.sigma = sigma
-
-    def _get_aug(self):
-        alpha = self._rng.uniform(0, self.alpha)
-        sigma = self._rng.uniform(0, self.sigma) 
-        self.applied_record["elastic_transform"] = (alpha, sigma)
-        return transforms.ElasticTransform(alpha=alpha, sigma=sigma)
-
-
-class RandomScale(BaseAugmentation):
-    def __init__(self, p: float = 0.9, max_scale: float = 1.0, min_scale=0.8, preserve_size=False, rng_seed=None):
-        super().__init__(p=p, rng_seed=rng_seed)
-        self.min_scale = min_scale
-        self.max_scale = max_scale
-        self.preserve_size = preserve_size
-
-    def _get_aug(self):
-        scale = self._rng.uniform(self.min_scale, self.max_scale)
-        self.applied_record["random_scale"] = scale
-        return scale
-
-    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
-        if self._p is None or self._rng.rand() < self._p:
-            scale = self._get_aug()
-            orig_h, orig_w = images.shape[-2], images.shape[-1]
-            new_h, new_w = int(orig_h * scale), int(orig_w * scale)
-
-            # Resize images and masks
-            images_scaled = F.interpolate(images, size=(new_h, new_w), mode="bilinear", align_corners=False)
-            masks_scaled = F.interpolate(masks.float(), size=(new_h, new_w), mode="nearest").long()
-
-            if self.preserve_size:
-                pad_h = max(orig_h - new_h, 0)
-                pad_w = max(orig_w - new_w, 0)
-                pad = [pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2]  # left, right, top, bottom
-
-                images_scaled = F.pad(images_scaled, pad, mode="constant", value=0)
-                masks_scaled = F.pad(masks_scaled, pad, mode="constant", value=0)
-
-                # If scaled image is larger, crop to original size
-                images_scaled = images_scaled[..., :orig_h, :orig_w]
-                masks_scaled = masks_scaled[..., :orig_h, :orig_w]
-
-            return images_scaled, masks_scaled
-        return images, masks
-
-
-class IdentityAugment(BaseAugmentation):
-    """Identity augmentation for debugging purposes."""
-    def __init__(self, p: float = 1.0, rng_seed=None):
-        super().__init__(p=p, rng_seed=rng_seed)
-
-    def _get_aug(self):
-        self.applied_record["identity"] = True
-        return transforms.Lambda(lambda x: x)
-
-    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
-        return images, masks
-
-
-class PretrainedAugmentations:
-    """Augmentation pipeline to get augmented copies of model embeddings."""
-    default_normalize = percentile_norm
-    
-    def __init__(self, rng_seed=None, normalize=True):
-        self.aug_record = {}
-        self.aug_list = [
-            # IdentityAugment(rng_seed=rng_seed), # debugging
-            # BrightnessJitter(bright_shift=0.05, contrast_shift=0.05, rng_seed=rng_seed),
-            FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
-            # RotAugment(degrees=10, rng_seed=rng_seed),
-            Rot90Augment(p=0.5, rng_seed=rng_seed),
-            # AddGaussianNoise(mean=0.0, std=0.02, rng_seed=rng_seed),
-            RandomScale(rng_seed=rng_seed),
-            # ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),
-            # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
-        ]
-        self._aug = None
-        self._rng = np.random.RandomState(rng_seed)
-        self.normalize = normalize
-        self.image_shape = None
-
-    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask, normalize_func=None) -> tuple[torch.Tensor, tv_tensors.Mask, dict]:
-        """Applies the augmentations to the images."""
-        images, masks = self.preprocess(images, masks, normalize_func=normalize_func)
-
-        self._rng.shuffle(self.aug_list)
-        
-        self._aug = transforms.Compose(self.aug_list)
-        
-        images = torch.unsqueeze(images, dim=1)  # add channel dimension (T, C, H, W) for augmentation
-        masks = torch.unsqueeze(masks, dim=1)  # add channel dimension (T, C, H, W) for augmentation
-        
-        images, masks = self._aug(images, masks)
-        if torch.isnan(images).any() or torch.isnan(masks).any():
-            raise RuntimeError("NaN values found in images or masks after augmentation.")
-        self.image_shape = images.shape
-        # NOTE : most models do require 3 channels, but this will be done in FeatureExtractor, so the output is squeezed
-        return images.squeeze(), masks.squeeze(), self.gather_records()
-    
-    def preprocess(self, images, masks, normalize_func=None):
-        if not len(images.shape) == 3:
-            raise ValueError(f"Images must be tensor of shape (T, H, W), got {len(images.shape)}D tensor.")
-        if not len(masks.shape) == 3:
-            raise ValueError(f"Masks must be tensor of shape (T, H, W), got {len(masks.shape)}D tensor.")
-        
-        if not isinstance(images, torch.Tensor):
-            try:
-                images = torch.tensor(images, dtype=torch.float32)
-            except Exception as e:
-                raise ValueError(f"Failed to convert images to tensor: {e}")
-        if not isinstance(masks, tv_tensors.Mask):
-            try:
-                masks = tv_tensors.Mask(masks, dtype=torch.int64)
-            except Exception as e:
-                raise ValueError(f"Failed to convert masks to tensor: {e}")
-        
-        if normalize_func is not None:
-            if not callable(normalize_func):
-                raise ValueError("normalize_func must be a callable function.")
-            images = normalize_func(images)
-            
-        return images, masks
-    
-    def gather_records(self):
-        """Gathers the applied augmentation records."""
-        self.aug_record = {}
-        for aug in self.aug_list:
-            self.aug_record.update(aug.applied_record)
-        self.aug_record["image_shape"] = self.image_shape
-        return self.aug_record
-
 # Configs for pretrained models ###
-
 
 @dataclass
 class PretrainedFeatureExtractorConfig:
@@ -1136,7 +859,7 @@ class FeatureExtractorAugWrapper:
     def __init__(
             self,
             extractor: FeatureExtractor,
-            augmenter: PretrainedAugmentations, 
+            augmenter: "PretrainedAugmentations", 
             n_aug: int = 1,
             force_recompute: bool = False,
         ):
