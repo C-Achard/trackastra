@@ -918,6 +918,7 @@ def train(args):
             coord_dim=dummy_data.ndim,
             feat_dim=dummy_data.feat_dim,
             pretrained_feat_dim=dummy_data.pretrained_feat_dim,
+            reduced_pretrained_feat_dim=args.reduced_pretrained_feat_dim,
             d_model=args.d_model,
             pos_embed_per_dim=args.pos_embed_per_dim,
             feat_embed_per_dim=args.feat_embed_per_dim,
@@ -1026,14 +1027,14 @@ def train(args):
 
     callbacks.append(pl.pytorch.callbacks.Timer(interval="epoch"))
     # # Mostly for stopping broken runs
-    callbacks.append(
-        pl.pytorch.callbacks.EarlyStopping(
-            monitor="val_loss",
-            patience=args.epochs // 6,
-            mode="min",
-            verbose=True,
-        )
-    )
+    # callbacks.append(
+    #     pl.pytorch.callbacks.EarlyStopping(
+    #         monitor="val_loss",
+    #         patience=args.epochs // 6,
+    #         mode="min",
+    #         verbose=True,
+    #     )
+    # )
 
     if args.example_images:
         callbacks.append(ExampleImages())
@@ -1068,6 +1069,7 @@ def train(args):
             # feat_dim=datasets["train"].datasets[0].feat_dim,
             feat_dim=feat_dim,
             pretrained_feat_dim=pretrained_feat_dim,
+            reduced_pretrained_feat_dim=args.reduced_pretrained_feat_dim,
             d_model=args.d_model,
             pos_embed_per_dim=args.pos_embed_per_dim,
             feat_embed_per_dim=args.feat_embed_per_dim,
@@ -1396,6 +1398,11 @@ def parse_train_args():
         default=False,
         help="Rotate features using augmented coordinates. features must be 'pretrained_feats' or 'pretrained_feats_aug' if True.",
     )
+    parser.add_argument(
+        "--reduced_pretrained_feat_dim",
+        type=int,
+        default=128,
+    )
 
     args, unknown_args = parser.parse_known_args()
 
@@ -1423,8 +1430,6 @@ def parse_train_args():
 
 
 if __name__ == "__main__":
-    import os
-    os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
     args = parse_train_args()
 
     # from torch.profiler import profile, record_function, ProfilerActivity

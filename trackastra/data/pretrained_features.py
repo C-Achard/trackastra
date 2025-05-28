@@ -342,11 +342,11 @@ class PretrainedAugmentations:
         self.aug_record = {}
         self.aug_list = [
             # IdentityAugment(rng_seed=rng_seed), # debugging
-            BrightnessJitter(bright_shift=0.25, contrast_shift=0.25, rng_seed=rng_seed),
+            # BrightnessJitter(bright_shift=0.05, contrast_shift=0.05, rng_seed=rng_seed),
             FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
             # RotAugment(degrees=10, rng_seed=rng_seed),
             Rot90Augment(p=0.5, rng_seed=rng_seed),
-            AddGaussianNoise(mean=0.0, std=0.05, rng_seed=rng_seed),
+            # AddGaussianNoise(mean=0.0, std=0.02, rng_seed=rng_seed),
             RandomScale(rng_seed=rng_seed),
             # ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),
             # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),

@@ -178,6 +178,7 @@ class TrackingTransformer(torch.nn.Module):
         coord_dim: int = 3,
         feat_dim: int = 0,
         pretrained_feat_dim: int = 0,
+        reduced_pretrained_feat_dim: int = 128,
         d_model: int = 128,
         nhead: int = 4,
         num_encoder_layers: int = 4,
@@ -197,14 +198,12 @@ class TrackingTransformer(torch.nn.Module):
         disable_all_coords: bool = False,
     ):
         super().__init__()
-    
-        if disable_xy_coords:
-            coord_dim = 1
         
         self.config = dict(
             coord_dim=coord_dim,
             feat_dim=feat_dim,
             pretrained_feat_dim=pretrained_feat_dim,
+            red_pt_feat_dim=reduced_pretrained_feat_dim,
             pos_embed_per_dim=pos_embed_per_dim,
             d_model=d_model,
             nhead=nhead,
@@ -222,9 +221,9 @@ class TrackingTransformer(torch.nn.Module):
             disable_all_coords=disable_all_coords,
         )
         
-        # TODO temp attr, add as config arg
+        # TODO temp attr, add as train config arg
         if pretrained_feat_dim > 0:
-            self.reduced_pretrained_feat_dim = 256
+            self.reduced_pretrained_feat_dim = reduced_pretrained_feat_dim
         else:
             self.reduced_pretrained_feat_dim = 0
         self._return_norms = True
@@ -251,7 +250,7 @@ class TrackingTransformer(torch.nn.Module):
         self.encoder = nn.ModuleList(
             [
                 EncoderLayer(
-                    coord_dim if not self._disable_xy_coords else 0,
+                    coord_dim,
                     d_model,
                     nhead,
                     dropout,
@@ -267,7 +266,7 @@ class TrackingTransformer(torch.nn.Module):
         self.decoder = nn.ModuleList(
             [
                 DecoderLayer(
-                    coord_dim if not self._disable_xy_coords else 0,
+                    coord_dim,
                     d_model,
                     nhead,
                     dropout,
@@ -304,6 +303,7 @@ class TrackingTransformer(torch.nn.Module):
 
         if self._disable_all_coords:
             self.pos_embed = nn.Identity()
+            
         elif self._disable_xy_coords:
             self.pos_embed = PositionalEncoding(
                 cutoffs=(window,),
@@ -332,10 +332,12 @@ class TrackingTransformer(torch.nn.Module):
         coords = coords - min_time
 
         if self._disable_xy_coords:
-            coords = coords[:, :, :1]
+            coords_feat = coords[:, :, :1].clone()
+        else:
+            coords_feat = coords.clone()
 
         if not self._disable_all_coords:
-            pos = self.pos_embed(coords)
+            pos = self.pos_embed(coords_feat)
         else:
             pos = None
             
@@ -343,7 +345,7 @@ class TrackingTransformer(torch.nn.Module):
             self.norms = {}
             if not self._disable_all_coords:
                 self.norms["pos_embed"] = pos.norm(dim=-1).detach().cpu().mean().item()
-                self.norms["coords"] = coords.norm(dim=-1).detach().cpu().mean().item()
+                self.norms["coords"] = coords_feat.norm(dim=-1).detach().cpu().mean().item()
         
         with torch.amp.autocast(enabled=False, device_type=device):
             # Determine if we have any features to use
