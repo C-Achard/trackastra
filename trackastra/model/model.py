@@ -203,7 +203,7 @@ class TrackingTransformer(torch.nn.Module):
             coord_dim=coord_dim,
             feat_dim=feat_dim,
             pretrained_feat_dim=pretrained_feat_dim,
-            red_pt_feat_dim=reduced_pretrained_feat_dim,
+            reduced_pretrained_feat_dim=reduced_pretrained_feat_dim,
             pos_embed_per_dim=pos_embed_per_dim,
             d_model=d_model,
             nhead=nhead,
