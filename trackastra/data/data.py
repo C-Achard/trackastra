@@ -205,6 +205,7 @@ class CTCData(Dataset):
         pretrained_backbone_config: PretrainedFeatureExtractorConfig | None = None,
         # pca_preprocessor: EmbeddingsPCACompression | None = None,
         rotate_features: bool = False,
+        load_immediately: bool = True,
         **kwargs,
     ) -> None:
         """Args:
@@ -239,6 +240,10 @@ class CTCData(Dataset):
         rotate_features (bool):
             Apply rotation to features based on (augmented) coordinates.
             Only valid if used with "pretrained_feats" or "pretrained_feats_aug" mode.
+        load_immediately (bool):
+            If True, load the data immediately. If False, load the data lazily.
+            If False, you need to call `start_loading()` to load the data.
+            Defaults to True.
         # pca_preprocessor (EmbeddingsPCACompression):
         #     PCA preprocessor for the pretrained features.
         #     If mode is set to "pretrained_feats", this is used to reduce the dimensionality of the features.
@@ -332,7 +337,14 @@ class CTCData(Dataset):
         self.feature_extractor = None
         self.pretrained_feature_augmenter = None
         # self.pca_preprocessor = pca_preprocessor
+        
+        if load_immediately:
+            self.start_loading()
+        
+        if kwargs:
+            logger.warning(f"Unused kwargs: {kwargs}")
 
+    def start_loading(self):
         start = default_timer()
 
         self._init_features()  # loads and creates windows
@@ -354,12 +366,9 @@ class CTCData(Dataset):
         if self.compress:
             self._compress_data()
 
-        if kwargs:
-            logger.warning(f"Unused kwargs: {kwargs}")
-
     def _init_features(self):
         if self.features == "wrfeat" or self.features == "pretrained_feats":
-            self.windows = self._load_windows()
+            self.windows = self._load_wrfeat()
         else:
             self.windows = self._load()
     
@@ -495,7 +504,7 @@ class CTCData(Dataset):
         start = default_timer()
 
         if self.features == "wrfeat" or self.features == "pretrained_feats":
-            self.windows = self._load_windows()
+            self.windows = self._load_wrfeat()
         else:
             self.windows = self._load()
 
@@ -1213,7 +1222,7 @@ class CTCData(Dataset):
 
         return augmenter, cropper
 
-    def _load_windows(self):
+    def _load_wrfeat(self):
         # # Load ground truth
         # self.gt_masks, self.gt_track_df = self._load_gt()
         # self.gt_masks = self._check_dimensions(self.gt_masks)
@@ -1474,7 +1483,7 @@ class CTCData(Dataset):
                 image_shape = img.shape
             pretrained_features = CTCData.rotate_features(
                 pretrained_features, coords, image_shape,
-                n_rot_dims=self.pretrained_feat_dim // 2,
+                n_rot_dims=self.pretrained_feat_dim,
             )
 
         res = dict(
@@ -1508,18 +1517,21 @@ class CTCData(Dataset):
                 raise ValueError("Empty pretrained features")
         
         return res
+    
+    def _get_pretrained_features_save_path(self):
+        if self.pretrained_config is not None:
+            img_folder_name = "_".join(self.root.parts[-3:]) if len(self.root.parts) >= 3 else "_".join(self.root.parts)
+            img_folder_name = str(img_folder_name).replace(".", "").replace("/", "_").replace("\\", "_").replace(" ", "_")
+            return self.pretrained_config.save_path / f"embeddings/{img_folder_name}"
 
     def _setup_pretrained_feature_extractor(self):
         if self.ndim == 3:
             raise ValueError("Pretrained model feature extraction is not implemented for 3D data")
         img_shape = self.imgs.shape[-2:]  # initial guess, replaced later if shape changes
-        # get with first three folders
-        img_folder_name = "_".join(self.root.parts[-3:]) if len(self.root.parts) >= 3 else "_".join(self.root.parts)
-        img_folder_name = str(img_folder_name).replace(".", "").replace("/", "_").replace("\\", "_").replace(" ", "_")
         from trackastra.data.pretrained_features import (
             FeatureExtractor,
         )
-        self.feature_extractor_save_path = self.pretrained_config.save_path / f"embeddings/{img_folder_name}"
+        self.feature_extractor_save_path = self._get_pretrained_features_save_path()
         # self.feature_extractor = FeatureExtractor.from_model_name(
         #     self.pretrained_config.model_name,
         #     img_shape, 
@@ -1632,7 +1644,7 @@ class CTCData(Dataset):
 class CTCDataAugPretrainedFeats(CTCData):
     """CTCData with pretrained features."""
 
-    def __init__(self, pretrained_n_augmentations: int = 3, force_recompute=False, aug_pipeline: PretrainedAugmentations = None, *args, **kwargs):
+    def __init__(self, pretrained_n_augmentations: int = 3, force_recompute=True, aug_pipeline: PretrainedAugmentations = None, *args, **kwargs):
         """Args:
         root (str):
             Folder containing the CTC TRA folder.
@@ -1679,8 +1691,10 @@ class CTCDataAugPretrainedFeats(CTCData):
         self.n_augs = pretrained_n_augmentations
         self.force_recompute = force_recompute
         
-        from trackastra.data.pretrained_augmentations import PretrainedAugmentations
-        self.pretrained_feats_augmenter = PretrainedAugmentations(rng_seed=42) if aug_pipeline is None else aug_pipeline
+        from trackastra.data.pretrained_augmentations import (
+            PretrainedMovementAugmentations,
+        )
+        self.pretrained_feats_augmenter = PretrainedMovementAugmentations(rng_seed=42) if aug_pipeline is None else aug_pipeline
         if not isinstance(self.pretrained_feats_augmenter, PretrainedAugmentations):
             raise ValueError(
                 f"Augmentation pipeline must be of type PretrainedAugmentations, got {type(self.pretrained_feats_augmenter)}"
@@ -1691,13 +1705,21 @@ class CTCDataAugPretrainedFeats(CTCData):
         
         self._aug_embeds_h5 = None
         self.delete_augs_after_loading = False
-        self.window_save_path = None
+        # self.window_save_path = None
         self._last_selected = None
         self._rng = np.random.default_rng()
         self._len = None
         self._debug = False
+        
+        super().__init__(*args, **kwargs, load_immediately=False)
+        
+        self.window_save_path = self._get_pretrained_features_save_path() / "windows"
+        self.window_save_path.mkdir(parents=True, exist_ok=True)
+        self.window_save_path = self.window_save_path / f"{self.config_hash}.h5"
+        logger.debug(f"Windows will be saved to {self.window_save_path}")
     
-        super().__init__(*args, **kwargs)
+        if kwargs.get("load_immediately", True):
+            self.start_loading()
         
         logger.info("Loading finished, clearing feature extractors...")
         
@@ -1719,7 +1741,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             except Exception as e:
                 logger.warning(f"Could not delete file {self._aug_embeds_h5}: {e}")
         logger.info("Feature extractors cleared.")
-    
+        
     @property
     def config(self):
         cfg = super().config
@@ -1765,25 +1787,26 @@ class CTCDataAugPretrainedFeats(CTCData):
     
     @classmethod
     def from_arrays(cls, imgs: np.ndarray, masks: np.ndarray, train_args: dict):
-        self = cls(**train_args)
-        start = default_timer()
+        raise NotImplementedError()
+        # self = cls(**train_args)
+        # start = default_timer()
         
-        self.windows = self._load()
-        self.n_divs = self._get_ndivs()
+        # self.windows = self._load()
+        # self.n_divs = self._get_ndivs()
         
-        if len(self.windows) > 0:
-            self.ndim = self.windows[0]["coords"][0].shape[1]
-            self.n_objects = tuple(len(t["coords"][0]) for t in self.windows)
-            logger.info(
-                f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
-                f" windows from {self.root} ({default_timer() - start:.1f}s)\n"
-            )
-        else:
-            self.n_objects = 0
-            logger.warning(f"Could not load any tracks from {self.root}")
+        # if len(self.windows) > 0:
+        #     self.ndim = self.windows[0]["coords"][0].shape[1]
+        #     self.n_objects = tuple(len(t["coords"][0]) for t in self.windows)
+        #     logger.info(
+        #         f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
+        #         f" windows from {self.root} ({default_timer() - start:.1f}s)\n"
+        #     )
+        # else:
+        #     self.n_objects = 0
+        #     logger.warning(f"Could not load any tracks from {self.root}")
 
-        if self.compress:
-            self._compress_data() 
+        # if self.compress:
+        #     self._compress_data() 
     
     def _load(self):        
         all_windows = []
@@ -1792,6 +1815,12 @@ class CTCDataAugPretrainedFeats(CTCData):
         # self.properties_by_time = dict()
         self.det_masks = dict()
         logger.info("Loading detections")
+        if len(self.detection_folders) > 1:
+            raise NotImplementedError("Pretrained aug features with several folders is not supported yet")
+        
+        if self._load_windows() is not None:
+            return self.windows
+        
         for _f in self.detection_folders:
             det_folder = self.root / _f
 
@@ -1859,11 +1888,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             )
             # logger.debug(f"AUG DICT keys : {augmented_dict.keys()}")
             self._aug_embeds_h5 = self.augmented_feature_extractor.get_save_path()
-            self.window_save_path = self._aug_embeds_h5.parent / "windows"
-            self.window_save_path.mkdir(parents=True, exist_ok=True)
-            self.window_save_path = self.window_save_path / f"{self.config_hash}.h5"
-            logger.debug(f"Windows will be saved to {self.window_save_path}")
-        
+
             _w = self._build_windows(
                 det_ts,
                 det_labels,
@@ -1874,10 +1899,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             
         return all_windows
 
-    def _build_windows(self, ts, labels, matching, augmented_dict):
-        if self._load_windows() is not None:
-            return self.windows
-        
+    def _build_windows(self, ts, labels, matching, augmented_dict):        
         windows = []
         window_size = self.window_size
         n_frames = len(np.unique(ts))

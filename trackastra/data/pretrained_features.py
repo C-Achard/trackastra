@@ -286,6 +286,8 @@ class FeatureExtractor(ABC):
         self.force_recompute = False
         self.embeddings = None
         
+        self._debug = False
+        
         if not isinstance(self.save_path, Path):
             self.save_path = Path(self.save_path)
         
@@ -752,6 +754,16 @@ class FeatureExtractor(ABC):
 
         return feats
         
+    def _agg_patches_debug_view(self, v, region_mask, lab=None):
+        """Debug function to visualize the patches and their embeddings."""        
+        # Add region mask
+        v.add_labels(
+            region_mask,
+            name=f"Region Mask {lab}",
+            opacity=0.5,
+            blending="translucent",
+        )
+        
     def _agg_patches_exact(self, masks, timepoints, labels, agg_fn=torch.mean):
         """Aggregates the embeddings of all patches that strictly belong to the mask."""
         try:
@@ -773,6 +785,24 @@ class FeatureExtractor(ABC):
         grid_H, grid_W = self.final_grid_size
         scale_y = grid_H / H
         scale_x = grid_W / W
+        
+        if self._debug:
+            import napari
+            if napari.current_viewer() is None:
+                v = napari.Viewer()
+            else:
+                v = napari.current_viewer()
+            if "Masks" not in v.layers:
+                v.add_labels(masks[0], name="Masks")
+            if "Embeddings" not in v.layers:
+                embs = embeddings.view(
+                    -1, self.final_grid_size[0], self.final_grid_size[1], self.hidden_state_size
+                )
+                v.add_image(
+                    embs.permute(3, 0, 1, 2).cpu().numpy(),
+                    name="Embeddings",
+                    colormap="inferno",
+                )
 
         def process_region(i, t):
             mask = masks[t] == labels[i]
@@ -784,6 +814,14 @@ class FeatureExtractor(ABC):
             grid_y = np.clip((y_idxs * scale_y).astype(int), 0, grid_H - 1)
             grid_x = np.clip((x_idxs * scale_x).astype(int), 0, grid_W - 1)
             patch_embeddings = embeddings[t][grid_y, grid_x]
+            
+            if self._debug:
+                # convert indcies to a mask in embeddings space
+                mask_emb = np.zeros((grid_H, grid_W), dtype=np.uint16)
+                mask_emb[grid_y, grid_x] = labels[i]
+                self._agg_patches_debug_view(v, mask_emb, labels[i])
+                napari.run()
+            
             if patch_embeddings.shape[0] == 0:
                 logger.warning(f"No mapped pixels for region {labels[i]} at timepoint {t}.")
                 return torch.zeros(self.hidden_state_size, device=self.device)
@@ -795,6 +833,8 @@ class FeatureExtractor(ABC):
         )
         for i, r in enumerate(res):
             feats[i] = r
+        # for i, t in enumerate(timepoints_shifted):
+        #     feats[i] = process_region(i, t)
 
         return feats
     
@@ -861,7 +901,7 @@ class FeatureExtractorAugWrapper:
             extractor: FeatureExtractor,
             augmenter: "PretrainedAugmentations", 
             n_aug: int = 1,
-            force_recompute: bool = False,
+            force_recompute: bool = True,
         ):
         self.extractor = extractor
         self.additional_features = extractor.additional_features
@@ -931,7 +971,9 @@ class FeatureExtractorAugWrapper:
                 t_start=t, 
                 additional_properties=self.extractor.additional_features
             )
-            for t, (mask, img) in enumerate(zip(masks, images))
+            for t, (mask, img) in tqdm(
+                enumerate(zip(masks, images)), desc="Computing features...", total=len(masks), leave=False
+            )  # if t == 10 debug
         ]
         features_dict = {t: v for f in features for t, v in f.to_dict().items()}
         return features_dict
