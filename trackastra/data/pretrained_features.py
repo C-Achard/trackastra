@@ -1428,6 +1428,28 @@ class CoTrackerFeatures(FeatureExtractor):
         self.fmaps_chunk_size = 8
         
         self.batch_return_type = "list[np.ndarray]"
+        
+    def precompute_image_embeddings(self, images):  # , windows, window_size):
+        """Precomputes embeddings for all images."""
+        _, H, W = images.shape
+        if H != self.input_size[0] or W != self.input_size[1]:
+            self.input_size = (H, W)
+            self.final_grid_size = (H // self.model.stride, W // self.model.stride)
+            logger.debug(f"Updated CoTracker input size: {self.input_size}, final grid size: {self.final_grid_size}")
+        missing = self._check_missing_embeddings()
+        all_embeddings = torch.zeros(len(images), self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size, device=self.device)
+        if missing:
+            for ts, batches in tqdm(self._prepare_batches(images), total=len(images) // self.batch_size, desc="Computing embeddings"):
+                embeddings = self._run_model(batches)
+                if torch.any(embeddings.isnan()):
+                    raise RuntimeError("NaN values found in features.")
+                # logger.debug(f"Embeddings shape: {embeddings.shape}")
+                all_embeddings[ts] = embeddings.to(torch.float32)
+                assert embeddings.shape[-1] == self.hidden_state_size
+            self.embeddings = all_embeddings
+            self._save_features(all_embeddings)
+        logger.debug(f"Precomputed embeddings shape: {self.embeddings.shape}")
+        return self.embeddings
 
     def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
         self.model.eval()
