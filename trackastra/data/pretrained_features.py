@@ -60,6 +60,7 @@ DinoV2Features = None
 SAMFeatures = None
 SAM2Features = None
 SAM2HighresFeatures = None
+CoTrackerFeatures = None
 MicroSAMFeatures = None
 TAPFeatures = None
 
@@ -82,6 +83,7 @@ PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.1
     "facebook/sam-vit-base",  # 256
     "facebook/sam2-hiera-large",  # 256
     "facebook/sam2.1-hiera-base-plus",  # 256
+    "facebookresearch/co-tracker",  # 128
     "microsam/vit_b_lm",
     "microsam/vit_l_lm",
     "weigertlab/tarrow",  # arbitrary. default 32
@@ -1400,7 +1402,70 @@ class SAM2HighresFeatures(SAM2Features):
         
         B, N, H, W = features.shape
         return features.permute(0, 2, 3, 1).reshape(B, H * W, N)  # (B, grid_size**2, hidden_state_size)
-    
+
+
+@register_backbone("facebookresearch/co-tracker", 128)
+class CoTrackerFeatures(FeatureExtractor):
+    model_name = "facebookresearch/co-tracker"
+
+    def __init__(
+        self, 
+        image_size: tuple[int, int],
+        save_path: str | Path,
+        batch_size: int = 4,
+        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        **kwargs,
+        ):
+        super().__init__(image_size, save_path, batch_size, device, mode)
+        self.input_size = image_size
+        cotracker = torch.hub.load("facebookresearch/co-tracker", "cotracker3_offline")
+        self.model = cotracker.model
+        self.model.to(device)
+        self.final_grid_size = (image_size[0] // self.model.stride, image_size[1] // self.model.stride)
+        self.hidden_state_size = 128
+        self.n_channels = 3
+        self.fmaps_chunk_size = 8
+        
+        self.batch_return_type = "list[np.ndarray]"
+
+    def _run_model(self, images: list[np.ndarray]) -> torch.Tensor:
+        self.model.eval()
+        x = torch.stack([torch.tensor(image) for image in images]).to(self.device)
+        x = x.unsqueeze(0)  # B, T, C, H, W
+        with torch.no_grad():
+            B = x.shape[0]
+            T = x.shape[1]
+            C_ = x.shape[2]
+            H, W = x.shape[3], x.shape[4]
+            if T > self.batch_size:
+                fmaps = []
+                for t in range(0, T, self.fmaps_chunk_size):
+                    video_chunk = x[:, t : t + self.fmaps_chunk_size]
+                    fmaps_chunk = self.model.fnet(video_chunk.reshape(-1, C_, H, W))
+                    T_chunk = video_chunk.shape[1]
+                    C_chunk, H_chunk, W_chunk = fmaps_chunk.shape[1:]
+                    fmaps.append(fmaps_chunk.reshape(B, T_chunk, C_chunk, H_chunk, W_chunk))
+                fmaps = torch.cat(fmaps, dim=1).reshape(-1, C_chunk, H_chunk, W_chunk)
+            else:
+                fmaps = self.model.fnet(x.reshape(-1, C_, H, W))
+            fmaps = fmaps.permute(0, 2, 3, 1)
+            fmaps = fmaps / torch.sqrt(
+                torch.maximum(
+                    torch.sum(torch.square(fmaps), axis=-1, keepdims=True),
+                    torch.tensor(1e-12, device=fmaps.device),
+                )
+            )
+            fmaps = fmaps.permute(0, 3, 1, 2).reshape(
+                B, -1, self.model.latent_dim, H // self.model.stride, W // self.model.stride
+            )  # B, T, N, H', W'
+            # end of original code
+            fmaps = fmaps.permute(0, 1, 3, 4, 2).squeeze(0)  # T, H', W', N
+            fmaps = fmaps.reshape(
+                fmaps.shape[0], fmaps.shape[1] * fmaps.shape[2], fmaps.shape[3]
+            )  # T, H' * W', N
+            return fmaps
+
 
 @register_backbone("microsam/vit_b_lm", 256)
 @register_backbone("microsam/vit_l_lm", 256)
