@@ -1679,8 +1679,8 @@ class CTCDataAugPretrainedFeats(CTCData):
         self.n_augs = pretrained_n_augmentations
         self.force_recompute = force_recompute
         
-        from trackastra.data.pretrained_augmentations import PretrainedAugmentations
-        self.pretrained_feats_augmenter = PretrainedAugmentations(rng_seed=42) if aug_pipeline is None else aug_pipeline
+        from trackastra.data.pretrained_augmentations import PretrainedAugmentations, PretrainedMovementAugmentations
+        self.pretrained_feats_augmenter = PretrainedMovementAugmentations(rng_seed=42) if aug_pipeline is None else aug_pipeline
         if not isinstance(self.pretrained_feats_augmenter, PretrainedAugmentations):
             raise ValueError(
                 f"Augmentation pipeline must be of type PretrainedAugmentations, got {type(self.pretrained_feats_augmenter)}"
