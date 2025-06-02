@@ -818,7 +818,6 @@ class FeatureExtractor(ABC):
             patch_embeddings = embeddings[t][grid_y, grid_x]
             
             if self._debug:
-                # convert indcies to a mask in embeddings space
                 mask_emb = np.zeros((grid_H, grid_W), dtype=np.uint16)
                 mask_emb[grid_y, grid_x] = labels[i]
                 self._agg_patches_debug_view(v, mask_emb, labels[i])

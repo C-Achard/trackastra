@@ -25,7 +25,10 @@ def predict(batch, model):
         _type_: _description_
     """
     feats = torch.from_numpy(batch["features"])
-    pretrained_feats = torch.from_numpy(batch["pretrained_features"])
+    if batch["pretrained_features"] is not None:
+        pretrained_feats = torch.from_numpy(batch["pretrained_features"])
+    else:
+        pretrained_feats = torch.zeros_like(feats)
     coords = torch.from_numpy(batch["coords"])
     timepoints = torch.from_numpy(batch["timepoints"]).long()
     # Hack that assumes that all parameters of a model are on the same device
@@ -33,6 +36,7 @@ def predict(batch, model):
     feats = feats.unsqueeze(0).to(device)
     timepoints = timepoints.unsqueeze(0).to(device)
     coords = coords.unsqueeze(0).to(device)
+    pretrained_feats = pretrained_feats.unsqueeze(0).to(device)
 
     # Concat timepoints to coordinates
     coords = torch.cat((timepoints.unsqueeze(2).float(), coords), dim=2)

@@ -44,8 +44,7 @@ _PROPERTIES = {
         "inertia_tensor",
     ),
 }
-DEFAULT_PROPERTIES = "regionprops"
-
+DEFAULT_PROPERTIES = "regionprops2"
 
 
 def _filter_points(
@@ -960,13 +959,14 @@ def build_windows(
 
         if len(feat) == 0:
             coords = np.zeros((0, feat.ndim), dtype=int)
-
+        pt_feats = feat.pretrained_feats if feat.pretrained_feats is not None else None
         w = dict(
             coords=coords,
             t1=t1,
             labels=labels,
             timepoints=timepoints,
             features=feat.features_stacked,
+            pretrained_features=pt_feats,
         )
         windows.append(w)
 
