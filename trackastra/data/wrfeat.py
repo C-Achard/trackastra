@@ -47,7 +47,6 @@ _PROPERTIES = {
 DEFAULT_PROPERTIES = "regionprops"
 
 
-
 def _filter_points(
     points: np.ndarray, shape: tuple[int], origin: tuple[int] | None = None
 ) -> np.ndarray:
@@ -144,7 +143,10 @@ class WRFeatures:
     def pretrained_feats(self):
         # for compatibility with WRPretrainedFeatures
         if "pretrained_feats" in self.features:
-            return self.features["pretrained_feats"]
+            # return self.features["pretrained_feats"]
+            return self.features["pretrained_feats"] / np.linalg.norm(
+                self.features["pretrained_feats"], axis=-1, keepdims=True
+            )
         return None
 
     def __len__(self):
@@ -301,9 +303,10 @@ class WRPretrainedFeatures(WRFeatures):
     
     @property
     def pretrained_feats(self):
-        if "pretrained_feats" in self.features:
-            return self.features["pretrained_feats"]
-        return None
+        super().pretrained_feats
+        # if "pretrained_feats" in self.features:
+        #     return self.features["pretrained_feats"]
+        # return None
     
     @classmethod
     def from_mask_img(
