@@ -44,7 +44,7 @@ _PROPERTIES = {
         "inertia_tensor",
     ),
 }
-DEFAULT_PROPERTIES = "regionprops2"
+DEFAULT_PROPERTIES = "regionprops"
 
 
 def _filter_points(
@@ -143,7 +143,10 @@ class WRFeatures:
     def pretrained_feats(self):
         # for compatibility with WRPretrainedFeatures
         if "pretrained_feats" in self.features:
-            return self.features["pretrained_feats"]
+            # return self.features["pretrained_feats"]
+            return self.features["pretrained_feats"] / np.linalg.norm(
+                self.features["pretrained_feats"], axis=-1, keepdims=True
+            )
         return None
 
     def __len__(self):
@@ -300,9 +303,10 @@ class WRPretrainedFeatures(WRFeatures):
     
     @property
     def pretrained_feats(self):
-        if "pretrained_feats" in self.features:
-            return self.features["pretrained_feats"]
-        return None
+        return super().pretrained_feats
+        # if "pretrained_feats" in self.features:
+        #     return self.features["pretrained_feats"]
+        # return None
     
     @classmethod
     def from_mask_img(
@@ -872,7 +876,7 @@ class AugmentationFactory:
 def get_features(
     detections: np.ndarray,
     imgs: np.ndarray | None = None,
-    features: Literal["none", "wrfeat", "pretrained_feats", "pretrained_feats_aug"] = "wrfeat",
+    features_type: Literal["none", "wrfeat", "pretrained_feats", "pretrained_feats_aug"] = "wrfeat",
     ndim: int = 2,
     n_workers=0,
     progbar_class=tqdm,
@@ -882,7 +886,7 @@ def get_features(
     detections = _check_dimensions(detections, ndim)
     imgs = _check_dimensions(imgs, ndim)
     logger.info(f"Extracting features from {len(detections)} detections")
-    if features in ["none", "wrfeat"]:
+    if features_type in ["none", "wrfeat"]:
         if n_workers > 0:
             features = joblib.Parallel(n_jobs=n_workers)(
                 joblib.delayed(WRFeatures.from_mask_img)(
@@ -911,7 +915,10 @@ def get_features(
                     desc="Extracting features",
                 )
             )
-    elif features == "pretrained_feats" or features == "pretrained_feats_aug":
+        if features_type == "none":
+            for f in features:
+                f.features = OrderedDict()
+    elif features_type == "pretrained_feats" or features_type == "pretrained_feats_aug":
         feature_extractor.precompute_image_embeddings(imgs)
         features = [
                     WRPretrainedFeatures.from_mask_img(

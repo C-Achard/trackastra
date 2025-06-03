@@ -105,7 +105,7 @@ class Trackastra:
         features = get_features(
             detections=masks,
             imgs=imgs,
-            features=self.train_args["features"],
+            features_type=self.train_args["features"],
             feature_extractor=self.feature_extractor,
             ndim=self.transformer.config["coord_dim"],
             n_workers=n_workers,

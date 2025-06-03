@@ -24,19 +24,24 @@ def predict(batch, model):
     Returns:
         _type_: _description_
     """
-    feats = torch.from_numpy(batch["features"])
+    if batch["features"] is not None:
+        feats = torch.from_numpy(batch["features"])
+    else:
+        feats = None
     if batch["pretrained_features"] is not None:
         pretrained_feats = torch.from_numpy(batch["pretrained_features"])
     else:
-        pretrained_feats = torch.zeros_like(feats)
+        pretrained_feats = None
     coords = torch.from_numpy(batch["coords"])
     timepoints = torch.from_numpy(batch["timepoints"]).long()
     # Hack that assumes that all parameters of a model are on the same device
     device = next(model.parameters()).device
-    feats = feats.unsqueeze(0).to(device)
-    timepoints = timepoints.unsqueeze(0).to(device)
     coords = coords.unsqueeze(0).to(device)
-    pretrained_feats = pretrained_feats.unsqueeze(0).to(device)
+    timepoints = timepoints.unsqueeze(0).to(device)
+    if feats is not None:
+        feats = feats.unsqueeze(0).to(device)
+    if pretrained_feats is not None:
+        pretrained_feats = pretrained_feats.unsqueeze(0).to(device)
 
     # Concat timepoints to coordinates
     coords = torch.cat((timepoints.unsqueeze(2).float(), coords), dim=2)
