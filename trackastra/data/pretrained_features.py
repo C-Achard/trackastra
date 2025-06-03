@@ -809,7 +809,8 @@ class FeatureExtractor(ABC):
 
         def process_region(i, t):
             if masks.shape[0] == 1:
-                mask_reg = masks[0] == labels[i]
+                masks = masks.squeeze(0)
+                mask_reg = masks == labels[i]
             else:
                 mask_reg = masks[t] == labels[i]
             if not np.any(mask_reg):
