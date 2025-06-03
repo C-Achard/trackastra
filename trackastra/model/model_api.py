@@ -185,6 +185,7 @@ class Trackastra:
                 device="cuda" if torch.cuda.is_available() else "cpu",
                 additional_features=additional_features,
             )
+            self.feature_extractor.force_recompute = True
         
         predictions = self._predict(imgs, masks, progbar_class=progbar_class)
         track_graph = self._track_from_predictions(predictions, mode=mode, **kwargs)
