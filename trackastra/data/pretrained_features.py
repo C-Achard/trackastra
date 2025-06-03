@@ -289,6 +289,7 @@ class FeatureExtractor(ABC):
         self.embeddings = None
         
         self._debug = False
+        # self._debug = True
         
         if not isinstance(self.save_path, Path):
             self.save_path = Path(self.save_path)
@@ -820,13 +821,12 @@ class FeatureExtractor(ABC):
             y_idxs, x_idxs = np.nonzero(mask_reg)
             grid_y = np.clip((y_idxs * scale_y).astype(int), 0, grid_H - 1)
             grid_x = np.clip((x_idxs * scale_x).astype(int), 0, grid_W - 1)
-            patch_embeddings = embeddings[t][grid_y, grid_x]
+            patch_embeddings = embeddings[timepoints[i]][grid_y, grid_x]
             
             if self._debug:
                 mask_emb = np.zeros((grid_H, grid_W), dtype=np.uint16)
                 mask_emb[grid_y, grid_x] = labels[i]
                 self._agg_patches_debug_view(v, mask_emb, labels[i])
-                napari.run()
             
             if patch_embeddings.shape[0] == 0:
                 logger.warning(f"No mapped pixels for region {labels[i]} at timepoint {t}.")
@@ -840,7 +840,9 @@ class FeatureExtractor(ABC):
         for i, r in enumerate(res):
             feats[i] = r
         # for i, t in enumerate(timepoints_shifted):
-        #     feats[i] = process_region(i, t)
+        #     feats[i] = process_region(i, t, masks)
+        if self._debug:
+            napari.run()
 
         return feats
     
