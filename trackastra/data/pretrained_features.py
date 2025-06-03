@@ -807,7 +807,7 @@ class FeatureExtractor(ABC):
                     colormap="inferno",
                 )
 
-        def process_region(i, t):
+        def process_region(i, t, masks):
             if masks.shape[0] == 1:
                 masks = masks.squeeze(0)
                 mask_reg = masks == labels[i]
@@ -835,7 +835,7 @@ class FeatureExtractor(ABC):
 
         # Parallel processing
         res = joblib.Parallel(n_jobs=8, backend="threading")(
-            joblib.delayed(process_region)(i, t) for i, t in enumerate(timepoints_shifted)
+            joblib.delayed(process_region)(i, t, masks=masks) for i, t in enumerate(timepoints_shifted)
         )
         for i, r in enumerate(res):
             feats[i] = r
