@@ -784,6 +784,7 @@ class FeatureExtractor(ABC):
         )
 
         _T, H, W = masks.shape
+        # assert embeddings.shape[0] == _T, f"Embeddings times {embeddings.shape} does not match masks times {_T}."
         grid_H, grid_W = self.final_grid_size
         scale_y = grid_H / H
         scale_x = grid_W / W
@@ -807,12 +808,15 @@ class FeatureExtractor(ABC):
                 )
 
         def process_region(i, t):
-            mask = masks[t] == labels[i]
-            if not np.any(mask):
+            if masks.shape[0] == 1:
+                mask_reg = masks[0] == labels[i]
+            else:
+                mask_reg = masks[t] == labels[i]
+            if not np.any(mask_reg):
                 logger.warning(f"No pixels found for region {labels[i]} at timepoint {t}.")
                 return torch.zeros(self.hidden_state_size, device=self.device)
 
-            y_idxs, x_idxs = np.nonzero(mask)
+            y_idxs, x_idxs = np.nonzero(mask_reg)
             grid_y = np.clip((y_idxs * scale_y).astype(int), 0, grid_H - 1)
             grid_x = np.clip((x_idxs * scale_x).astype(int), 0, grid_W - 1)
             patch_embeddings = embeddings[t][grid_y, grid_x]
@@ -902,7 +906,7 @@ class FeatureExtractorAugWrapper:
             extractor: FeatureExtractor,
             augmenter: "PretrainedAugmentations", 
             n_aug: int = 1,
-            force_recompute: bool = True,
+            force_recompute: bool = False,
         ):
         self.extractor = extractor
         self.additional_features = extractor.additional_features
@@ -1759,7 +1763,7 @@ class EncodedLabelsFeatures(FeatureExtractor):
         return self._encode_labels(labels)  # (n_labels, self.hidden_state_size)
 
 
-@register_backbone("debug/random", 64)
+@register_backbone("debug/random", 128)
 class RandomFeatures(FeatureExtractor):
     model_name = "debug/random"
 
@@ -1777,7 +1781,7 @@ class RandomFeatures(FeatureExtractor):
         # self.final_grid_size = self.orig_image_size
         self.final_grid_size = 128
         self.n_channels = 3
-        self.hidden_state_size = 64
+        self.hidden_state_size = 128
         
         self._seed = 42
         self.device = "cpu"
@@ -1794,9 +1798,10 @@ class RandomFeatures(FeatureExtractor):
                 len(images),
                 self.final_grid_size[0] * self.final_grid_size[1], 
                 self.hidden_state_size, 
-                generator=self._generator
+                generator=self._generator,
+                dtype=torch.float32
             )
-        feats = feats * 4 - 2  # [-2, 2]
+        # feats = feats * 4 - 2  # [-2, 2]
         return feats.to("cpu")
 
 

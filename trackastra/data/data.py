@@ -1325,6 +1325,12 @@ class CTCData(Dataset):
                     )
                     for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
                 )
+                # features = []
+                # for t, (mask, img) in enumerate(zip(det_masks, self.imgs)):
+                #     wrf = wrfeat.WRFeatures.from_mask_img(
+                #         mask=mask[None], img=img[None], t_start=t
+                #     )
+                #     features.append(wrf)
 
             properties_by_time = dict()
             for _t, _feats in enumerate(features):

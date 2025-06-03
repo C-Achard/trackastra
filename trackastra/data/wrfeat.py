@@ -44,7 +44,7 @@ _PROPERTIES = {
         "inertia_tensor",
     ),
 }
-DEFAULT_PROPERTIES = "regionprops"
+DEFAULT_PROPERTIES = "regionprops2"
 
 
 def _filter_points(
