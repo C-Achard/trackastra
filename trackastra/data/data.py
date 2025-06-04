@@ -1487,7 +1487,7 @@ class CTCData(Dataset):
                 image_shape = img._shape
             else:
                 image_shape = img.shape
-            logger.debug(f"Rotating pretrained features with shape {pretrained_features.shape} for image shape {image_shape}")
+            # logger.debug(f"Rotating pretrained features with shape {pretrained_features.shape} for image shape {image_shape}")
             pretrained_features = CTCData.rotate_features(
                 pretrained_features, coords, image_shape,
                 n_rot_dims=self.pretrained_feat_dim,

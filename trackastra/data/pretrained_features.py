@@ -697,14 +697,13 @@ class FeatureExtractor(ABC):
         try:
             for i, (t, _, _) in enumerate(patch_idxs):
                 feats[i] = embeddings_dict[t][indices[i]]
-                if norm:
-                    feats[i] = feats[i] / feats[i].norm(dim=-1, keepdim=True)
         except KeyError as e:
             logger.error(f"KeyError: {e} - Check if the timepoint exists in embeddings_dict.")
         except IndexError as e:
             # TODO improve handling of this error. Maybe check shape earlier
             logger.error(f"IndexError: {e} - Embeddings exist but do not have the correct shape. Did the model input size change ? If so, please delete saved embeddings and recompute.")
-        
+        if norm:
+            feats = feats / feats.norm(dim=-1, keepdim=True)
         if self.apply_rope:
             centroids = FeatureExtractor.get_centroids_from_masks(masks)
             feats = self.apply_rope_to_features(feats, centroids) 
@@ -827,8 +826,8 @@ class FeatureExtractor(ABC):
             grid_y = np.clip((y_idxs * scale_y).astype(int), 0, grid_H - 1)
             grid_x = np.clip((x_idxs * scale_x).astype(int), 0, grid_W - 1)
             patch_embeddings = embeddings[timepoints[i]][grid_y, grid_x]
-            if norm:
-                patch_embeddings = patch_embeddings / patch_embeddings.norm(dim=-1, keepdim=True)
+            # if norm:
+            #     patch_embeddings = patch_embeddings / patch_embeddings.norm(dim=-1, keepdim=True)
             
             if self._debug:
                 mask_emb = np.zeros((grid_H, grid_W), dtype=np.uint16)
@@ -850,7 +849,8 @@ class FeatureExtractor(ABC):
         #     feats[i] = process_region(i, t, masks)
         if self._debug:
             napari.run()
-
+        if norm:
+            feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats
     
     def _exact_patch(self, imgs, masks, coords):
