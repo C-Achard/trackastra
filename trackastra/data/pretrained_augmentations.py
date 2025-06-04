@@ -133,20 +133,39 @@ class AddGaussianNoise(BaseAugmentation):
     def __init__(self, mean: float = 0.0, std: float = 0.1, rng_seed=None):
         super().__init__(p=None, rng_seed=rng_seed)
         self.mean = mean
-        self.std = std
+        self.sigma = std
         self.signature = {
             "AddGaussianNoise": {
                 "mean": self.mean,
-                "std": self.std
+                "std": self.sigma
             }
         }
 
     def _get_aug(self):
         # sample random mean/std
-        mean = self._rng.uniform(-self.mean, self.mean) if self.mean is not None else None
-        std = self._rng.uniform(0, self.std) if self.std is not None else None
-        self.applied_record["gaussian_noise"] = (mean, std)
-        return transforms.Lambda(lambda x: x + torch.randn_like(x) * std + mean)
+        self.applied_record["gaussian_noise"] = (self.mean, self.sigma)
+        return transforms.GaussianNoise(mean=self.mean, sigma=self.sigma)
+
+    def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
+        aug = self._get_aug()
+        images = aug(images)
+        return images, masks
+
+
+class GaussianBlur(BaseAugmentation):
+    def __init__(self, kernel_size: int = 3, sigma: tuple[float] = (0.01, 1.0), rng_seed=None):
+        super().__init__(p=None, rng_seed=rng_seed)
+        self.kernel_size = kernel_size
+        self.sigma = sigma
+        self.signature = {
+            "GaussianBlur": {
+                "kernel_size": self.kernel_size,
+                "sigma": self.sigma
+            }
+        }
+
+    def _get_aug(self):
+        return transforms.GaussianBlur(kernel_size=self.kernel_size, sigma=self.sigma)
 
     def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
         aug = self._get_aug()
@@ -269,12 +288,13 @@ class PretrainedAugmentations:
         self.aug_record = {}
         self.aug_list = [
             # IdentityAugment(rng_seed=rng_seed), # debugging
-            BrightnessJitter(bright_shift=0.05, contrast_shift=0.05, rng_seed=rng_seed),
+            BrightnessJitter(bright_shift=0.3, contrast_shift=0.3, rng_seed=rng_seed),
             FlipAugment(p_horizontal=0.5, p_vertical=0.5, rng_seed=rng_seed),
             # RotAugment(degrees=10, rng_seed=rng_seed),
             Rot90Augment(p=0.5, rng_seed=rng_seed),
-            AddGaussianNoise(mean=0.0, std=0.02, rng_seed=rng_seed),
+            # AddGaussianNoise(mean=0.0, std=0.02, rng_seed=rng_seed),
             RandomScale(rng_seed=rng_seed),
+            GaussianBlur(kernel_size=5, sigma=(0.01, 2.0), rng_seed=rng_seed),
             # ElasticTransform(p=0.25, alpha=10.0, sigma=0.5, rng_seed=rng_seed),
             # RandomAffine(degrees=0.0, translate=(0.1, 0.1), scale=(0.9, 1.1), rng_seed=rng_seed),
         ]
