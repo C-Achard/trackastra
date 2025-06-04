@@ -282,6 +282,7 @@ class FeatureExtractor(ABC):
         self.mode = mode
         self.additional_features = None
         self.apply_rope = False
+        self.normalize_embeddings = True
         # Saving parameters
         self.save_path: str | Path = save_path
         self.do_save = True
@@ -436,19 +437,19 @@ class FeatureExtractor(ABC):
         
         match self.mode:
             case "nearest_patch":
-                feats = self._nearest_patches(coords, masks)
+                feats = self._nearest_patches(coords, masks, norm=self.normalize_embeddings)
             case "mean_patches_bbox" | "mean_patches_exact" | "max_patches_bbox" | "max_patches_exact":
                 if masks is None or labels is None or timepoints is None:
                     raise ValueError("Masks and labels must be provided for the chosen patch mode.")
                 match self.mode:
                     case "mean_patches_bbox":
-                        feats = self._agg_patches_bbox(masks, timepoints, labels)
+                        feats = self._agg_patches_bbox(masks, timepoints, labels, norm=self.normalize_embeddings)
                     case "mean_patches_exact":
-                        feats = self._agg_patches_exact(masks, timepoints, labels)
+                        feats = self._agg_patches_exact(masks, timepoints, labels, norm=self.normalize_embeddings)
                     case "max_patches_bbox":
-                        feats = self._agg_patches_bbox(masks, timepoints, labels, agg=torch.max)
+                        feats = self._agg_patches_bbox(masks, timepoints, labels, agg=torch.max, norm=self.normalize_embeddings)
                     case "max_patches_exact":
-                        feats = self._agg_patches_exact(masks, timepoints, labels, agg=torch.max)
+                        feats = self._agg_patches_exact(masks, timepoints, labels, agg=torch.max, norm=self.normalize_embeddings)
             case _:
                 raise NotImplementedError(f"Mode {self.mode} is not implemented.")
         
@@ -670,7 +671,7 @@ class FeatureExtractor(ABC):
         
         napari.run()
             
-    def _nearest_patches(self, coords, masks=None):
+    def _nearest_patches(self, coords, masks=None, norm=True):
         """Finds the nearest patches to the detections in the embedding."""
         # find coordinate patches from detections
         patch_coords = self._map_coords_to_model_grid(coords)
@@ -696,6 +697,8 @@ class FeatureExtractor(ABC):
         try:
             for i, (t, _, _) in enumerate(patch_idxs):
                 feats[i] = embeddings_dict[t][indices[i]]
+                if norm:
+                    feats[i] = feats[i] / feats[i].norm(dim=-1, keepdim=True)
         except KeyError as e:
             logger.error(f"KeyError: {e} - Check if the timepoint exists in embeddings_dict.")
         except IndexError as e:
@@ -708,7 +711,7 @@ class FeatureExtractor(ABC):
         return feats
     
     # @average_time_decorator
-    def _agg_patches_bbox(self, masks, timepoints, labels, agg=torch.mean):
+    def _agg_patches_bbox(self, masks, timepoints, labels, agg=torch.mean, norm=True):
         """Averages the embeddings of all patches that intersect with the detection.
         
         Args:
@@ -735,12 +738,14 @@ class FeatureExtractor(ABC):
         patches = {t: patch for t, patch in zip(times, patches_res)}
         # logger.debug(f"Patches : {patches}")
             
-        embeddings = self._load_features()    
+        embeddings = self._load_features()
 
         def process_region(i, t):
             patches_feats = []
             for patch in patches[t][labels[i]]:
                 embs = embeddings[t][patch[1] * self.final_grid_size[1] + patch[0]]
+                if norm:
+                    embs = embs / embs.norm(dim=-1, keepdim=True)
                 patches_feats.append(embs)
             aggregated = agg(torch.stack(patches_feats), dim=0)
             # If agg is torch.max, extract only the values
@@ -767,7 +772,7 @@ class FeatureExtractor(ABC):
             blending="translucent",
         )
         
-    def _agg_patches_exact(self, masks, timepoints, labels, agg_fn=torch.mean):
+    def _agg_patches_exact(self, masks, timepoints, labels, agg_fn=torch.mean, norm=True):
         """Aggregates the embeddings of all patches that strictly belong to the mask."""
         try:
             n_regions = len(timepoints)
@@ -822,6 +827,8 @@ class FeatureExtractor(ABC):
             grid_y = np.clip((y_idxs * scale_y).astype(int), 0, grid_H - 1)
             grid_x = np.clip((x_idxs * scale_x).astype(int), 0, grid_W - 1)
             patch_embeddings = embeddings[timepoints[i]][grid_y, grid_x]
+            if norm:
+                patch_embeddings = patch_embeddings / patch_embeddings.norm(dim=-1, keepdim=True)
             
             if self._debug:
                 mask_emb = np.zeros((grid_H, grid_W), dtype=np.uint16)
@@ -1568,6 +1575,7 @@ class TAPFeatures(FeatureExtractor):
         self.batch_return_type = "torch.Tensor"
         self.channel_first = False
         self.rescale_batches = False
+        self.normalize_embeddings = False
     
         # TODO clear full model from memory
     

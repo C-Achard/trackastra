@@ -1487,6 +1487,7 @@ class CTCData(Dataset):
                 image_shape = img._shape
             else:
                 image_shape = img.shape
+            logger.debug(f"Rotating pretrained features with shape {pretrained_features.shape} for image shape {image_shape}")
             pretrained_features = CTCData.rotate_features(
                 pretrained_features, coords, image_shape,
                 n_rot_dims=self.pretrained_feat_dim,
@@ -1632,10 +1633,10 @@ class CTCData(Dataset):
         cos = torch.cos(angles)
         sin = torch.sin(angles)
         # Interleave features for rotation
-        try:
-            features_rot = features[:, skip_first:n_rot_dims + skip_first].view(N, -1, 2)
-        except Exception:
-            breakpoint()
+        # try:
+        features_rot = features[:, skip_first:n_rot_dims + skip_first].view(N, -1, 2)
+        # except Exception:
+        #     breakpoint()
         x_feat, y_feat = features_rot[..., 0], features_rot[..., 1]
         x_rot = x_feat * cos[:, ::2] - y_feat * sin[:, ::2]
         y_rot = x_feat * sin[:, ::2] + y_feat * cos[:, ::2]
@@ -2205,7 +2206,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 image_shape = metadata["image_shape"]
             pretrained_features = CTCData.rotate_features(
                 pretrained_features, coords, image_shape,
-                n_rot_dims=self.pretrained_feat_dim // 2
+                n_rot_dims=self.pretrained_feat_dim  # // 2
             )
 
         res = dict(
