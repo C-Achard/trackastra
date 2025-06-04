@@ -826,8 +826,8 @@ class FeatureExtractor(ABC):
             grid_y = np.clip((y_idxs * scale_y).astype(int), 0, grid_H - 1)
             grid_x = np.clip((x_idxs * scale_x).astype(int), 0, grid_W - 1)
             patch_embeddings = embeddings[timepoints[i]][grid_y, grid_x]
-            # if norm:
-            #     patch_embeddings = patch_embeddings / patch_embeddings.norm(dim=-1, keepdim=True)
+            if norm:  # normalizing before the mean seems most effective
+                patch_embeddings = patch_embeddings / patch_embeddings.norm(dim=-1, keepdim=True)
             
             if self._debug:
                 mask_emb = np.zeros((grid_H, grid_W), dtype=np.uint16)
@@ -849,8 +849,8 @@ class FeatureExtractor(ABC):
         #     feats[i] = process_region(i, t, masks)
         if self._debug:
             napari.run()
-        if norm:
-            feats = feats / feats.norm(dim=-1, keepdim=True)
+        # if norm:
+        #     feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats
     
     def _exact_patch(self, imgs, masks, coords):
