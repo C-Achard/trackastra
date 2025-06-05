@@ -9,7 +9,7 @@ import torch
 import yaml
 from tqdm import tqdm
 
-from ..data import build_windows, get_features, load_tiff_timeseries
+from ..data import FeatureExtractor, build_windows, get_features, load_tiff_timeseries
 from ..tracking import TrackGraph, build_graph, track_greedy
 from ..utils import normalize
 from .model import TrackingTransformer
@@ -264,7 +264,20 @@ class Trackastra:
             raise RuntimeError(
                 f"images should be a sequence of {self.transformer.config['coord_dim']}D images"
             )
-
+        feat_type = self.train_args["features"]
+        if feat_type == "pretrained_feats" or feat_type == "pretrained_feats_aug":
+            additional_features = self.train_args.get(
+                "pretrained_feats_additional_props", None
+            )
+            self.feature_extractor = FeatureExtractor.from_model_name(
+                self.train_args["pretrained_feats_model"],
+                imgs.shape[-2:], 
+                save_path=self.imgs_path / "embeddings",
+                mode=self.train_args["pretrained_feats_mode"],
+                device="cuda" if torch.cuda.is_available() else "cpu",
+                additional_features=additional_features,
+            )
+            self.feature_extractor.force_recompute = True
         predictions = self._predict(
             imgs,
             masks,

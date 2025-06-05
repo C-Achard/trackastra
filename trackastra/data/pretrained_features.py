@@ -54,16 +54,6 @@ except ImportError:
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
-# forward declarations for indexing
-HieraFeatures = None
-DinoV2Features = None
-SAMFeatures = None
-SAM2Features = None
-SAM2HighresFeatures = None
-CoTrackerFeatures = None
-MicroSAMFeatures = None
-TAPFeatures = None
-
 # Updated with actual class after each definition
 # See register_backbone decorator
 AVAILABLE_PRETRAINED_BACKBONES = {}
