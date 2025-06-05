@@ -76,6 +76,38 @@ def _border_dist(mask: np.ndarray, cutoff: float = 5):
     dist = 1 - np.minimum(edt(border) / cutoff, 1)
     return tuple(r.intensity_max for r in regionprops(mask, intensity_image=dist))
 
+
+def _border_dist_fast(mask: np.ndarray, cutoff: float = 5):
+    cutoff = int(cutoff)
+    border = np.ones(mask.shape, dtype=np.float32)
+    ndim = len(mask.shape)
+
+    for axis, size in enumerate(mask.shape):
+        # Create fade values for the band [0, cutoff)
+        band_vals = np.arange(cutoff, dtype=np.float32) / cutoff
+
+        # Build slices for the low border
+        low_slices = [slice(None)] * ndim
+        low_slices[axis] = slice(0, cutoff)
+        border_low = border[tuple(low_slices)]
+        border_low_vals = np.minimum(
+            border_low, band_vals[(...,) + (None,) * (ndim - axis - 1)]
+        )
+        border[tuple(low_slices)] = border_low_vals
+
+        # Build slices for the high border
+        high_slices = [slice(None)] * ndim
+        high_slices[axis] = slice(size - cutoff, size)
+        band_vals_rev = band_vals[::-1]
+        border_high = border[tuple(high_slices)]
+        border_high_vals = np.minimum(
+            border_high, band_vals_rev[(...,) + (None,) * (ndim - axis - 1)]
+        )
+        border[tuple(high_slices)] = border_high_vals
+
+    dist = 1 - border
+    return tuple(r.intensity_max for r in regionprops(mask, intensity_image=dist))
+
 # Features classes
 
 
@@ -225,7 +257,7 @@ class WRFeatures:
             _df["timepoint"] = i + t_start
 
             if use_border_dist:
-                _df["border_dist"] = _border_dist(y)
+                _df["border_dist"] = _border_dist_fast(y)
 
             dfs.append(_df)
         df = pd.concat(dfs)
@@ -888,11 +920,12 @@ def get_features(
     logger.info(f"Extracting features from {len(detections)} detections")
     if features_type in ["none", "wrfeat"]:
         if n_workers > 0:
-            features = joblib.Parallel(n_jobs=n_workers)(
+            logger.info(f"Using {n_workers} processes for feature extraction")
+            features = joblib.Parallel(n_jobs=n_workers, backend="loky")(
                 joblib.delayed(WRFeatures.from_mask_img)(
                     # New axis for time component
-                    mask=mask[np.newaxis, ...],
-                    img=img[np.newaxis, ...],
+                    mask=mask[np.newaxis, ...].copy(),
+                    img=img[np.newaxis, ...].copy(),
                     t_start=t,
                 )
                 for t, (mask, img) in progbar_class(
