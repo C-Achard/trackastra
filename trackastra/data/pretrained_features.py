@@ -1086,8 +1086,11 @@ class FeatureExtractorAugWrapper:
             # Check if the group already exists and delete it if necessary
             group_name = str(aug_id)
             if group_name in f:
-                del f[group_name]
-            
+                try:
+                    del f[group_name]
+                except KeyError as e:
+                    logger.error(f"Error deleting group {group_name}: {e}")
+
             group = f.create_group(group_name)
             # Store applied augmentations as attributes
             try:

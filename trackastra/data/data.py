@@ -2017,7 +2017,10 @@ class CTCDataAugPretrainedFeats(CTCData):
                 for i, w in enumerate(self.windows):
                     group_name = f"window_{i}"
                     if group_name in f:
-                        del f[group_name]
+                        try:
+                            del f[group_name]
+                        except KeyError as e:
+                            logger.error(f"Error deleting group {group_name}: {e}")
                     grp = f.create_group(group_name)
                     for aug_id in range(self.n_augs + 1):
                         grp.create_dataset(f"coords_{aug_id}", data=w["coords"][aug_id])
