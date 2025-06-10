@@ -95,7 +95,9 @@ def register_backbone(model_name, feat_dim):
 
 
 # Feature extraction from pretrained models
-# Currently meant to wrap any transformers model
+# Meant to wrap any transformers model
+# >NOTE : currently not applicable to 3D data
+# (but aggregation-based modes may be adapted eventually)
 import time
 from functools import wraps
 
@@ -137,6 +139,8 @@ class PretrainedFeatureExtractorConfig:
     mode (str):
         Specify the mode to use for the model.
         Currently available modes are "nearest_patch", "mean_patches_bbox", "mean_patches_exact", "max_patches_bbox", "max_patches_exact".
+    normalize_embeddings (bool):
+        Whether to normalize the embeddings (divide by the norm).
     device (str):
         Specify the device to use for the model.
         If not set and "pretrained_feats" is used, the device is automatically set by default to "cuda", "mps" or "cpu" as available.
@@ -154,20 +158,21 @@ class PretrainedFeatureExtractorConfig:
     save_path: str | Path = None
     batch_size: int = 4
     mode: PretrainedFeatsExtractionMode = "nearest_patch"
+    normalize_embeddings: bool = True  # whether to normalize the embeddings (divide by the norm)
     device: str | None = None
     feat_dim: int = None
     additional_features: str | None = None  # for regionprops features
     additional_feat_dim: int = 0  # for regionprops features
     n_augmented_copies: int = 0  # number of augmented copies to create
-    pca_components: int = None  # for PCA reduction of the features
-    pca_preprocessor_path: str | Path = None  # for PCA preprocessor path
-    apply_rope: bool = False  # whether to apply "RoPE" to the features
+    # pca_components: int = None  # for PCA reduction of the features
+    # pca_preprocessor_path: str | Path = None  # for PCA preprocessor path
+    # apply_rope: bool = False  # whether to apply RoPE-like rotation to the features based on coordinates
     
     def __post_init__(self):
         self._guess_device()
         self.model_path = self._check_path(self.model_path)
         self.save_path = self._check_path(self.save_path)
-        self.pca_preprocessor_path = self._check_path(self.pca_preprocessor_path)
+        # self.pca_preprocessor_path = self._check_path(self.pca_preprocessor_path)
         self._check_model_availability()
         
     def _check_path(self, path):
@@ -241,9 +246,24 @@ class FeatureExtractor(ABC):
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        normalize_embeddings: bool = True,
         **kwargs,
         ):
+        """ 
+        Initializes a pretrained model feature extractor with the given parameters.
+        Consumes images, computes embeddings of shape T, H*W, N (N the model feature dimension),
+        and generates n_regions x N embeddings for each object in each frame using the specified mode.
+        
+        Args:
+        - image_size (tuple[int, int]): Size of the input images (height, width).
+        - save_path (str | Path): Path to save the embeddings.
+        - batch_size (int): Batch size to use for the model.
+        - device (str): Device to use for the model. Defaults to "cuda" if available, otherwise "cpu".
+        - mode (str): Mode to use for the model. Defaults to "nearest_patch". See type PretrainedFeatsExtractionMode for available modes.
+        - normalize_embeddings (bool): Whether to normalize the embeddings (divide by the norm). Defaults to True. For aggregation-based modes, this is applied before aggregation.
+        """
         # Image processor extra args
+        # Modify as needed in subclasses
         self.im_proc_kwargs = {
             "do_rescale": False,
             "do_normalize": False,
@@ -266,19 +286,19 @@ class FeatureExtractor(ABC):
         self.rescale_batches = False
         self.channel_first = True
         self.batch_return_type: Literal["list[np.ndarray]", "np.ndarray", "torch.Tensor"] = "np.ndarray"
-        # Parameters for embedding extraction
         self.batch_size = batch_size
         self.device = device
+        # Parameters for embedding extraction
         self.mode = mode
         self.additional_features = None
-        self.apply_rope = False
-        self.normalize_embeddings = True
+        self.apply_rope = False # deprecated, use "rotate_features" in CTCData # TODO remove
+        self.normalize_embeddings = normalize_embeddings
         # Saving parameters
         self.save_path: str | Path = save_path
         self.do_save = True
         self.force_recompute = False
-        self.embeddings = None
         
+        self.embeddings = None
         self._debug = False
         # self._debug = True
         
@@ -378,11 +398,12 @@ class FeatureExtractor(ABC):
             mode=config.mode,
             additional_features=config.additional_features,
             model_folder=config.model_path,
+            normalize_embeddings=config.normalize_embeddings,
             # n_augmented_copies=config.n_augmented_copies,
             # aug_pipeline=PretrainedAugmentations() if config.n_augmented_copies > 0 else None,
         )
-        model.additional_features = config.additional_features
-        model.apply_rope = config.apply_rope
+        # model.additional_features = config.additional_features
+        # model.apply_rope = config.apply_rope
         return model
         
     def clear_model(self):
