@@ -56,12 +56,12 @@ def cache_class(dataset_kwargs, cachedir=None):
                 logger.info(f"Loading cached dataset from {cache_file}")
                 with open(cache_file, "rb") as f:
                     c = pickle.load(f)
-                    if c.pretrained_config is not None:
-                        cfg = c.pretrained_config
-                        if cfg.pca_preprocessor_path is not None:
-                            pca = EmbeddingsPCACompression.from_pretrained_cfg(cfg)
-                            pca.load_from_file(cfg.pca_preprocessor_path)
-                            c.pca_preprocessor = pca
+                    # if c.pretrained_config is not None:
+                    #     cfg = c.pretrained_config
+                        # if cfg.pca_preprocessor_path is not None:
+                        #     pca = EmbeddingsPCACompression.from_pretrained_cfg(cfg)
+                        #     pca.load_from_file(cfg.pca_preprocessor_path)
+                        #     c.pca_preprocessor = pca
                         
                     return c
             else:
@@ -279,14 +279,14 @@ class BalancedDataModule(LightningDataModule):
                 f" {(default_timer() - start):.1f} s)\n\n"
             )
 
-            if self.dataset_kwargs.get("pretrained_backbone_config") is not None and split == "train":
-                cfg = self.dataset_kwargs["pretrained_backbone_config"]
-                if cfg.pca_preprocessor_path is not None:
-                    pca = EmbeddingsPCACompression.from_pretrained_cfg(cfg)
-                    embeddings_paths = []
-                    for p in feature_extractor_save_paths:
-                        embeddings_paths.append(p)
-                    pca.fit_on_embeddings(embeddings_paths)
+            # if self.dataset_kwargs.get("pretrained_backbone_config") is not None and split == "train":
+            #     cfg = self.dataset_kwargs["pretrained_backbone_config"]
+            #     if cfg.pca_preprocessor_path is not None:
+            #         pca = EmbeddingsPCACompression.from_pretrained_cfg(cfg)
+            #         embeddings_paths = []
+            #         for p in feature_extractor_save_paths:
+            #             embeddings_paths.append(p)
+            #         pca.fit_on_embeddings(embeddings_paths)
         
         del datasets
 

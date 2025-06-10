@@ -200,8 +200,8 @@ class PretrainedFeatureExtractorConfig:
             ][2]
             if self.additional_features not in wrfeat._PROPERTIES:
                 raise ValueError(f"Additional feature {self.additional_features} is not valid.")
-        if self.pca_components is not None:
-            self.feat_dim = self.pca_components
+        # if self.pca_components is not None:
+        #     self.feat_dim = self.pca_components
 
     def _guess_device(self):
         if self.device is None:
@@ -402,7 +402,8 @@ class FeatureExtractor(ABC):
             # n_augmented_copies=config.n_augmented_copies,
             # aug_pipeline=PretrainedAugmentations() if config.n_augmented_copies > 0 else None,
         )
-        # model.additional_features = config.additional_features
+        model.additional_features = config.additional_features
+        model.normalize_embeddings = config.normalize_embeddings
         # model.apply_rope = config.apply_rope
         return model
         
@@ -445,6 +446,8 @@ class FeatureExtractor(ABC):
         - labels (np.ndarray): Unique labels of the regions.
         """
         feats = torch.zeros(len(coords), self.hidden_state_size, device=self.device)
+        # if self.normalize_embeddings:
+        #     logger.debug("Normalizing embeddings.")
         
         match self.mode:
             case "nearest_patch":
@@ -598,6 +601,13 @@ class FeatureExtractor(ABC):
                 batch = list([im for im in batch])
             yield timepoints, batch
     
+    @staticmethod
+    def normalize_tensor(embeddings: torch.Tensor, norm: bool = True) -> torch.Tensor:
+        """Normalizes the embeddings by dividing by the norm."""
+        if norm:
+            embeddings = embeddings / (embeddings.norm(dim=-1, keepdim=True) + 1e-8)
+        return embeddings
+    
     def _map_coords_to_model_grid(self, coords):
         scale_x = self.input_size[0] / self.orig_image_size[0]
         scale_y = self.input_size[1] / self.orig_image_size[1]
@@ -713,8 +723,7 @@ class FeatureExtractor(ABC):
         except IndexError as e:
             # TODO improve handling of this error. Maybe check shape earlier
             logger.error(f"IndexError: {e} - Embeddings exist but do not have the correct shape. Did the model input size change ? If so, please delete saved embeddings and recompute.")
-        if norm:
-            feats = feats / feats.norm(dim=-1, keepdim=True)
+        feats = FeatureExtractor.normalize_tensor(feats, norm=norm)
         if self.apply_rope:
             centroids = FeatureExtractor.get_centroids_from_masks(masks)
             feats = self.apply_rope_to_features(feats, centroids) 
@@ -754,8 +763,7 @@ class FeatureExtractor(ABC):
             patches_feats = []
             for patch in patches[t][labels[i]]:
                 embs = embeddings[t][patch[1] * self.final_grid_size[1] + patch[0]]
-                if norm:
-                    embs = embs / embs.norm(dim=-1, keepdim=True)
+                embs = FeatureExtractor.normalize_tensor(embs, norm=norm)
                 patches_feats.append(embs)
             aggregated = agg(torch.stack(patches_feats), dim=0)
             # If agg is torch.max, extract only the values
@@ -837,9 +845,9 @@ class FeatureExtractor(ABC):
             grid_y = np.clip((y_idxs * scale_y).astype(int), 0, grid_H - 1)
             grid_x = np.clip((x_idxs * scale_x).astype(int), 0, grid_W - 1)
             patch_embeddings = embeddings[timepoints[i]][grid_y, grid_x]
-            if norm:  # normalizing before the mean seems most effective
-                patch_embeddings = patch_embeddings / patch_embeddings.norm(dim=-1, keepdim=True)
-            
+            # normalizing before the mean seems most effective
+            patch_embeddings = FeatureExtractor.normalize_tensor(patch_embeddings, norm=norm)
+
             if self._debug:
                 mask_emb = np.zeros((grid_H, grid_W), dtype=np.uint16)
                 mask_emb[grid_y, grid_x] = labels[i]
@@ -864,9 +872,59 @@ class FeatureExtractor(ABC):
         #     feats = feats / feats.norm(dim=-1, keepdim=True)
         return feats
     
-    def _exact_patch(self, imgs, masks, coords):
-        """Uses the image patch centered on the detection for embedding."""
-        raise NotImplementedError()
+    def _exact_patch(self, masks, timepoints, labels, norm=False):
+        """Returns all embeddings overlapping with the mask of each object."""
+        try:
+            n_regions = len(timepoints)
+            timepoints_shifted = timepoints - timepoints.min()
+        except ValueError:
+            logger.error("Error: issue computing shifted timepoints.")
+            logger.error(f"Regions: {len(timepoints)}")
+            logger.error(f"Timepoints: {timepoints}")
+            return torch.zeros(n_regions, self.hidden_state_size, device=self.device)
+
+        feats = torch.zeros(n_regions, self.hidden_state_size, device=self.device)
+        embeddings = self._load_features()
+        embeddings = embeddings.view(
+            -1, self.final_grid_size[0], self.final_grid_size[1], self.hidden_state_size
+        )
+
+        _T, H, W = masks.shape
+        grid_H, grid_W = self.final_grid_size
+        scale_y = grid_H / H
+        scale_x = grid_W / W
+        
+        def process_region(i, t, masks):
+            if masks.shape[0] == 1: # single timepoint
+                masks = masks.squeeze(0)
+                mask_reg = masks == labels[i]
+            else: # all timepoints
+                mask_reg = masks[t] == labels[i]
+            if not np.any(mask_reg):
+                logger.warning(f"No pixels found for region {labels[i]} at timepoint {t}.")
+                return torch.zeros(self.hidden_state_size, device=self.device)
+
+            y_idxs, x_idxs = np.nonzero(mask_reg)
+            grid_y = np.clip((y_idxs * scale_y).astype(int), 0, grid_H - 1)
+            grid_x = np.clip((x_idxs * scale_x).astype(int), 0, grid_W - 1)
+            patch_embeddings = embeddings[timepoints[i]][grid_y, grid_x]            
+            if patch_embeddings.shape[0] == 0:
+                logger.warning(f"No mapped pixels for region {labels[i]} at timepoint {t}.")
+                return torch.zeros(self.hidden_state_size, device=self.device)
+            return patch_embeddings
+
+        # Parallel processing
+        res = joblib.Parallel(n_jobs=8, backend="threading")(
+            joblib.delayed(process_region)(i, t, masks=masks) for i, t in enumerate(timepoints_shifted)
+        )
+        for i, r in enumerate(res):
+            feats[i] = r
+        # for i, t in enumerate(timepoints_shifted):
+        #     feats[i] = process_region(i, t, masks)
+        
+        if norm:
+            feats = feats / feats.norm(dim=-1, keepdim=True)
+        return feats
     
     def _save_features(self, features):  # , timepoint):
         """Saves the features to disk."""
