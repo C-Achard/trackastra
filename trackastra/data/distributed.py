@@ -20,10 +20,6 @@ from torch.utils.data import (
     DistributedSampler,
 )
 
-from trackastra.data.pretrained_features import (
-    EmbeddingsPCACompression,
-)
-
 from .data import CTCData, CTCDataAugPretrainedFeats, determine_ctc_class
 from .utils import make_hashable
 
@@ -267,7 +263,7 @@ class BalancedDataModule(LightningDataModule):
                 )
                 for inp in inps
             ]
-            feature_extractor_save_paths = [
+            [
                 d.feature_extractor_save_path for d in ctc_datasets if split == "train"
             ]
             datasets[split] = torch.utils.data.ConcatDataset(

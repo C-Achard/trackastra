@@ -291,7 +291,7 @@ class FeatureExtractor(ABC):
         # Parameters for embedding extraction
         self.mode = mode
         self.additional_features = None
-        self.apply_rope = False # deprecated, use "rotate_features" in CTCData # TODO remove
+        self.apply_rope = False  # deprecated, use "rotate_features" in CTCData # TODO remove
         self.normalize_embeddings = normalize_embeddings
         # Saving parameters
         self.save_path: str | Path = save_path
@@ -895,10 +895,10 @@ class FeatureExtractor(ABC):
         scale_x = grid_W / W
         
         def process_region(i, t, masks):
-            if masks.shape[0] == 1: # single timepoint
+            if masks.shape[0] == 1:  # single timepoint
                 masks = masks.squeeze(0)
                 mask_reg = masks == labels[i]
-            else: # all timepoints
+            else:  # all timepoints
                 mask_reg = masks[t] == labels[i]
             if not np.any(mask_reg):
                 logger.warning(f"No pixels found for region {labels[i]} at timepoint {t}.")

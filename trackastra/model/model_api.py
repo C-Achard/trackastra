@@ -269,10 +269,14 @@ class Trackastra:
             additional_features = self.train_args.get(
                 "pretrained_feats_additional_props", None
             )
+            if self.imgs_path is None:
+                save_path = "./embeddings"
+            else:
+                save_path = self.imgs_path / "embeddings"
             self.feature_extractor = FeatureExtractor.from_model_name(
                 self.train_args["pretrained_feats_model"],
                 imgs.shape[-2:], 
-                save_path=self.imgs_path / "embeddings",
+                save_path=save_path,
                 mode=self.train_args["pretrained_feats_mode"],
                 device="cuda" if torch.cuda.is_available() else "cpu",
                 additional_features=additional_features,
