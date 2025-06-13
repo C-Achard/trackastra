@@ -65,6 +65,7 @@ PretrainedFeatsExtractionMode = Literal[
     "mean_patches_exact",  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
     "max_patches_bbox"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
     "max_patches_exact"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
+    "median_patches_exact", # Runs on whole image, then takes the median for each feature dimension of all patches that intersect with the detection
 ]
 
 PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.11 so it has to be copied
@@ -464,6 +465,8 @@ class FeatureExtractor(ABC):
                         feats = self._agg_patches_bbox(masks, timepoints, labels, agg=torch.max, norm=self.normalize_embeddings)
                     case "max_patches_exact":
                         feats = self._agg_patches_exact(masks, timepoints, labels, agg=torch.max, norm=self.normalize_embeddings)
+                    case "median_patches_exact":
+                        feats = self._agg_patches_exact(masks, timepoints, labels, agg=torch.median, norm=self.normalize_embeddings)
             case _:
                 raise NotImplementedError(f"Mode {self.mode} is not implemented.")
         
