@@ -300,7 +300,7 @@ class FeatureExtractor(ABC):
         self.force_recompute = False
         
         self.embeddings = None
-        self._debug = False
+        self._debug_view = False
         # self._debug = True
         
         if not isinstance(self.save_path, Path):
@@ -816,7 +816,7 @@ class FeatureExtractor(ABC):
         scale_y = grid_H / H
         scale_x = grid_W / W
         
-        if self._debug:
+        if self._debug_view:
             import napari
             if napari.current_viewer() is None:
                 v = napari.Viewer()
@@ -842,7 +842,8 @@ class FeatureExtractor(ABC):
                 mask_reg = masks[t] == labels[i]
             if not np.any(mask_reg):
                 logger.warning(f"No pixels found for region {labels[i]} at timepoint {t}.")
-                return torch.zeros(self.hidden_state_size, device=self.device)
+                # return torch.zeros(self.hidden_state_size, device=self.device) # small values to avoid zero divs etc.
+                return torch.fill(self.hidden_state_size, 1e-8, device=self.device)
 
             y_idxs, x_idxs = np.nonzero(mask_reg)
             grid_y = np.clip((y_idxs * scale_y).astype(int), 0, grid_H - 1)
@@ -851,7 +852,7 @@ class FeatureExtractor(ABC):
             # normalizing before the mean seems most effective
             patch_embeddings = FeatureExtractor.normalize_tensor(patch_embeddings, norm=norm)
 
-            if self._debug:
+            if self._debug_view:
                 mask_emb = np.zeros((grid_H, grid_W), dtype=np.uint16)
                 mask_emb[grid_y, grid_x] = labels[i]
                 self._agg_patches_debug_view(v, mask_emb, labels[i])
@@ -869,7 +870,7 @@ class FeatureExtractor(ABC):
             feats[i] = r
         # for i, t in enumerate(timepoints_shifted):
         #     feats[i] = process_region(i, t, masks)
-        if self._debug:
+        if self._debug_view:
             napari.run()
         # if norm:
         #     feats = feats / feats.norm(dim=-1, keepdim=True)
