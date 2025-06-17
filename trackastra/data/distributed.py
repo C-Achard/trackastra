@@ -31,6 +31,7 @@ def cache_class(dataset_kwargs, cachedir=None):
     """A simple file cache for CTCData."""
 
     def hash_args_kwargs(*args, **kwargs):
+        # FIXME rotate_features arg should not be part of hash, if it changes cached data does not change
         hashable_args = tuple(make_hashable(arg) for arg in args)
         hashable_kwargs = make_hashable(kwargs)
         combined_serialized = json.dumps(
