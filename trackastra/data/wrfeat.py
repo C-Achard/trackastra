@@ -227,6 +227,8 @@ class WRFeatures:
     @staticmethod
     def get_regionprops_features(properties, mask, img, t_start=0):
         """Extracts regionprops features from a mask and image."""
+        img = np.asarray(img)
+        mask = np.asarray(mask)
         _ntime, ndim = mask.shape[0], mask.ndim - 1
         if ndim not in (2, 3):
             raise ValueError("Only 2D or 3D data is supported")
