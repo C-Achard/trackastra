@@ -111,7 +111,7 @@ class Trackastra:
         self.feature_extractor = None
 
     @classmethod
-    def from_folder(cls, dir: Path | str, device: str | None = None):
+    def from_folder(cls, dir: Path | str, device: str | None = None, checkpoint_path: str | None = None):
         """Load a Trackastra model from a local folder.
 
         Args:
@@ -119,13 +119,16 @@ class Trackastra:
                 - model weights
                 - train_config.yaml with training arguments
             device: Device to run model on.
+            checkpoint_path: Path to model checkpoint file (defaults to "model.pt" in dir).
 
         Returns:
             Trackastra model instance.
         """
         # Always load to cpu first
+        if checkpoint_path is None:
+            checkpoint_path = "model.pt"
         transformer = TrackingTransformer.from_folder(
-            Path(dir).expanduser(), map_location="cpu"
+            Path(dir).expanduser(), map_location="cpu", checkpoint_path=checkpoint_path
         )
         train_args = yaml.load(open(dir / "train_config.yaml"), Loader=yaml.FullLoader)
         return cls(transformer=transformer, train_args=train_args, device=device)
