@@ -1,5 +1,5 @@
 # Forked from zih_bacteria.yaml
-name: vanvliet_cotracker3_aug
+name: vanvliet_sam21_aug
 # model: /home/achard/trastra_v2/BEST_2025-06-04_13-23-38_vanvliet_sam21_aug
 epochs: 1000
 warmup_epochs: 5

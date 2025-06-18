@@ -2071,7 +2071,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             return self.windows
 
     def _sample_from_file(self, window_id: int, aug_choice: int = 0):
-        with h5py.File(self.window_save_path, "r") as f:
+        with h5py.File(self.window_save_path, "r", swmr=True) as f:
             grp = f[f"window_{window_id}"]
             coords = grp[f"coords_{aug_choice}"][()]
             # features = grp[f"feats_{aug_choice}"][()]
