@@ -65,7 +65,7 @@ PretrainedFeatsExtractionMode = Literal[
     "mean_patches_exact",  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
     "max_patches_bbox"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
     "max_patches_exact"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
-    "median_patches_exact", # Runs on whole image, then takes the median for each feature dimension of all patches that intersect with the detection
+    "median_patches_exact",  # Runs on whole image, then takes the median for each feature dimension of all patches that intersect with the detection
 ]
 
 PretrainedBackboneType = Literal[  # cannot unpack this directly in python < 3.11 so it has to be copied
@@ -453,7 +453,7 @@ class FeatureExtractor(ABC):
         match self.mode:
             case "nearest_patch":
                 feats = self._nearest_patches(coords, masks, norm=self.normalize_embeddings)
-            case "mean_patches_bbox" | "mean_patches_exact" | "max_patches_bbox" | "max_patches_exact":
+            case "mean_patches_bbox" | "mean_patches_exact" | "max_patches_bbox" | "max_patches_exact" | "median_patches_exact":
                 if masks is None or labels is None or timepoints is None:
                     raise ValueError("Masks and labels must be provided for the chosen patch mode.")
                 match self.mode:
@@ -793,7 +793,7 @@ class FeatureExtractor(ABC):
             blending="translucent",
         )
         
-    def _agg_patches_exact(self, masks, timepoints, labels, agg_fn=torch.mean, norm=True):
+    def _agg_patches_exact(self, masks, timepoints, labels, agg=torch.mean, norm=True):
         """Aggregates the embeddings of all patches that strictly belong to the mask."""
         try:
             n_regions = len(timepoints)
@@ -860,14 +860,18 @@ class FeatureExtractor(ABC):
             if patch_embeddings.shape[0] == 0:
                 logger.warning(f"No mapped pixels for region {labels[i]} at timepoint {t}.")
                 return torch.zeros(self.hidden_state_size, device=self.device)
-            return agg_fn(patch_embeddings, dim=0)
+            return agg(patch_embeddings, dim=0)
 
         # Parallel processing
         res = joblib.Parallel(n_jobs=8, backend="threading")(
             joblib.delayed(process_region)(i, t, masks=masks) for i, t in enumerate(timepoints_shifted)
         )
         for i, r in enumerate(res):
-            feats[i] = r
+            # If agg is torch.max or torch.median, extract only the values
+            if isinstance(r, torch.return_types.max) or isinstance(r, torch.return_types.median):
+                feats[i] = r.values
+            else:
+                feats[i] = r
         # for i, t in enumerate(timepoints_shifted):
         #     feats[i] = process_region(i, t, masks)
         if self._debug_view:
