@@ -1660,7 +1660,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         pretrained_n_augmentations: int = 3,
         force_recompute=True,
         aug_pipeline: PretrainedAugmentations = None,
-        load_from_disk: bool = True,
+        load_from_disk: bool = False,
         *args, 
         **kwargs
         ):

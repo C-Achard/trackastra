@@ -555,8 +555,8 @@ class FeatureExtractor(ABC):
         centroids[:, 1] = centroids[:, 1] / masks.shape[2]
         return centroids
     
-    def apply_rope_to_features(self, features: torch.Tensor, centroids: np.ndarray) -> torch.Tensor:
-        """Applies a RoPE-style rotation to each feature vector based on the object's centroid.
+    def apply_rot_to_features(self, features: torch.Tensor, centroids: np.ndarray) -> torch.Tensor:
+        """Applies a rotation to each feature vector based on the object's centroid.
         
         Args:
             features: (n_objects, hidden_state_size) tensor of features.
@@ -566,7 +566,7 @@ class FeatureExtractor(ABC):
             Rotated features: (n_objects, hidden_state_size)
         """
         n_objects, d = features.shape
-        assert d % 2 == 0, "Feature dimension must be even for RoPE."
+        assert d % 2 == 0, "Feature dimension must be even for rotation."
         angle_x = torch.from_numpy(2 * np.pi * centroids[:, 0]).to(features.device)
         angle_y = torch.from_numpy(2 * np.pi * centroids[:, 1]).to(features.device)
 
@@ -580,7 +580,7 @@ class FeatureExtractor(ABC):
         y_rot = x_feat * sin[:, ::2] + y_feat * cos[:, ::2]
         rotated = torch.stack([x_rot, y_rot], dim=-1).reshape(n_objects, d)
         if torch.allclose(rotated, features):
-            logger.warning("Rotated features are equal to original features. RoPE may not be applied correctly.")
+            logger.warning("Rotated features are equal to original features. Rotation may not be applied correctly.")
         return rotated
     
     def _prepare_batches(self, images):
@@ -729,7 +729,7 @@ class FeatureExtractor(ABC):
         feats = FeatureExtractor.normalize_tensor(feats, norm=norm)
         if self.apply_rope:
             centroids = FeatureExtractor.get_centroids_from_masks(masks)
-            feats = self.apply_rope_to_features(feats, centroids) 
+            feats = self.apply_rot_to_features(feats, centroids) 
         return feats
     
     # @average_time_decorator
