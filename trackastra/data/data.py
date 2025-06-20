@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Sequence
+from functools import lru_cache
 from pathlib import Path
 from timeit import default_timer
 from typing import TYPE_CHECKING, ClassVar, Literal
@@ -1318,6 +1319,9 @@ class CTCData(Dataset):
                     feats = wrf.features_stacked
                     if feats is not None and np.any(np.isnan(wrf.features_stacked)):
                         raise ValueError("NaN in features")
+                if torch.cuda.is_available():
+                    self.feature_extractor.embeddings = self.feature_extractor.embeddings.cpu()
+                    torch.cuda.empty_cache()
             elif self.features == "wrfeat":
                 features = joblib.Parallel(n_jobs=8)(
                     joblib.delayed(wrfeat.WRFeatures.from_mask_img)(
@@ -1651,7 +1655,15 @@ class CTCData(Dataset):
 class CTCDataAugPretrainedFeats(CTCData):
     """CTCData with pretrained features."""
 
-    def __init__(self, pretrained_n_augmentations: int = 3, force_recompute=True, aug_pipeline: PretrainedAugmentations = None, *args, **kwargs):
+    def __init__(
+        self,
+        pretrained_n_augmentations: int = 3,
+        force_recompute=True,
+        aug_pipeline: PretrainedAugmentations = None,
+        load_from_disk: bool = True,
+        *args, 
+        **kwargs
+        ):
         """Args:
         root (str):
             Folder containing the CTC TRA folder.
@@ -1683,6 +1695,9 @@ class CTCDataAugPretrainedFeats(CTCData):
             Ignored otherwise.
         pretrained_n_augmentations (int):
             How many augmented versions of the pretrained model embeddings to create.
+        load_from_disk (bool):
+            If True, the offline augmented windows are saved to disk and sampled from there.
+            If False, all windows are loaded into RAM and sampled from there.
         force_recompute (bool):
             If False, previously computed offline augmentations are loaded if available.
         # pca_preprocessor (EmbeddingsPCACompression):
@@ -1697,6 +1712,7 @@ class CTCDataAugPretrainedFeats(CTCData):
 
         self.n_augs = pretrained_n_augmentations
         self.force_recompute = force_recompute
+        self.load_from_disk = load_from_disk
         
         from trackastra.data.pretrained_augmentations import (
             PretrainedMovementAugmentations,
@@ -1710,7 +1726,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         self.augmented_feature_extractor = None
         self.save_windows = True
         
-        self._aug_embeds_h5 = None
+        self._aug_embeds_h5 = None  # used to sample from disk when load_from_disk is True
         self.delete_augs_after_loading = False
         # self.window_save_path = None
         self._last_selected = None
@@ -1720,34 +1736,46 @@ class CTCDataAugPretrainedFeats(CTCData):
         
         super().__init__(*args, **kwargs, load_immediately=False)
         
-        self.window_save_path = self._get_pretrained_features_save_path() / "windows"
-        self.window_save_path.mkdir(parents=True, exist_ok=True)
-        self.window_save_path = self.window_save_path / f"{self.config_hash}.h5"
-        logger.debug(f"Windows will be saved to {self.window_save_path}")
-    
-        if kwargs.get("load_immediately", True):
+        if self.load_from_disk:
+            self.window_save_path = self._get_pretrained_features_save_path() / "windows"
+            self.window_save_path.mkdir(parents=True, exist_ok=True)
+            self.window_save_path = self.window_save_path / f"{self.config_hash}.h5"
+            logger.debug(f"Windows will be saved to {self.window_save_path}")
+        else:
+            self.window_save_path = None
+            logger.debug("Windows will be loaded into RAM")
+            
+        if kwargs.get("load_immediately", True):  # hook to delay loading if needed
             self.start_loading()
+            start = default_timer()
+        else:
+            start = None
         
-        logger.info("Loading finished, clearing feature extractors...")
+        logger.debug("Loading finished, clearing feature extractors...")
         
         # Clear pre-trained model
         self.augmented_feature_extractor = None
         # Clear windos as they are loaded from disk when __getitem__ is called
-        if self.save_windows:
-            self._get_ndim_and_nobj(None, self.windows)
+        if self.load_from_disk:
+            self._get_ndim_and_nobj(start, self.windows)
             self.windows = None
-        # Clear intermediate data
-        if self.delete_augs_after_loading and self._aug_embeds_h5.exists():
-            try:
-                self._aug_embeds_h5.close()
-            except Exception as e:
-                logger.warning(f"Could not close HDF5 file: {e}")
-            try:
-                self._aug_embeds_h5.unlink()
-                self._aug_embeds_h5 = None
-            except Exception as e:
-                logger.warning(f"Could not delete file {self._aug_embeds_h5}: {e}")
-        logger.info("Feature extractors cleared.")
+            # Clear intermediate data
+            if self.delete_augs_after_loading and self._aug_embeds_h5.exists():
+                try:
+                    self._aug_embeds_h5.close()
+                except Exception as e:
+                    logger.warning(f"Could not close HDF5 file: {e}")
+                try:
+                    self._aug_embeds_h5.unlink()
+                    self._aug_embeds_h5 = None
+                except Exception as e:
+                    logger.warning(f"Could not delete file {self._aug_embeds_h5}: {e}")
+            logger.info("Feature extractors cleared.")
+        else:
+            self._get_ndim_and_nobj(start, self.windows)
+            
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
     @property
     def config(self):
@@ -1762,8 +1790,10 @@ class CTCDataAugPretrainedFeats(CTCData):
     
     def _init_features(self):
         self.windows = self._load()
-        if self.save_windows:
+        if self.load_from_disk:
             self._save_windows()
+        else:
+            self._get_ndim_and_nobj(None, self.windows)
             
     def _setup_features_augs(
         self
@@ -1774,20 +1804,25 @@ class CTCDataAugPretrainedFeats(CTCData):
 
         return augmenter, cropper
         
-    def _get_ndim_and_nobj(self, start, windows=None):
+    def _get_ndim_and_nobj(self, start=None, windows=None):
         if windows is not None:
             self.ndim = windows[0]["coords"][0][0].shape[0]
             self.n_objects = tuple(len(t["coords"][0]) for t in windows)
-            return
-        if self.save_windows:
+        if self.save_windows and self.load_from_disk:
             return
         if len(self.windows) > 0:
             self.ndim = self.windows[0]["coords"][0].shape[1]
             self.n_objects = tuple(len(t["coords"][0]) for t in self.windows)
-            logger.info(
-                f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
-                f" windows from {self.root} ({default_timer() - start:.1f}s)\n"
-            )
+            if start is None:
+                logger.info(
+                    f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
+                    f" windows from {self.root}\n"
+                )
+            else:
+                logger.info(
+                    f"Found {np.sum(self.n_objects)} objects in {len(self.windows)} track"
+                    f" windows from {self.root} ({default_timer() - start:.1f}s)\n"
+                )
         else:
             self.n_objects = 0
             logger.warning(f"Could not load any tracks from {self.root}")
@@ -1892,9 +1927,11 @@ class CTCDataAugPretrainedFeats(CTCData):
             augmented_dict = self.augmented_feature_extractor.compute_all_features(
                 images=imgs,
                 masks=det_masks,
+                clear_mem=not self.load_from_disk,
             )
             # logger.debug(f"AUG DICT keys : {augmented_dict.keys()}")
-            self._aug_embeds_h5 = self.augmented_feature_extractor.get_save_path()
+            if self.load_from_disk:
+                self._aug_embeds_h5 = self.augmented_feature_extractor.get_save_path()
 
             _w = self._build_windows(
                 det_ts,
@@ -2037,6 +2074,11 @@ class CTCDataAugPretrainedFeats(CTCData):
             raise ValueError("No augmented embeddings h5 file set. Cannot save windows.")
         
     def _load_windows(self):
+        if not self.load_from_disk:
+            if getattr(self, "windows", None) is not None:
+                logger.debug("Windows already loaded into memory.")
+                return self.windows
+            return None
         if self.window_save_path.exists() and not self.force_recompute:
             self.windows = []
             logger.info(f"Loading windows from {self.window_save_path}")
@@ -2070,7 +2112,23 @@ class CTCDataAugPretrainedFeats(CTCData):
             logger.info(f"Loaded {self._len} windows from {self.window_save_path}")
             return self.windows
 
+    @lru_cache
+    def _sample_from_memory(self, n: int, aug_choice: int = 0):
+        """When self.load_from_disk is False, sample a window from memory."""
+        # logger.debug(f"Sampling window {n} with augmentation choice {aug_choice}")
+        track = self.windows[n]
+        # 0 is original, 1 to n_augs are the augmented versions
+        coords = track["coords"][aug_choice]
+        features = track["features"][aug_choice]
+        assoc_matrix = track["assoc_matrix"]
+        labels = track["labels"]
+        timepoints = track["timepoints"]
+        t1 = track["t1"]
+
+        return coords, features, labels, timepoints, assoc_matrix, t1
+
     def _sample_from_file(self, window_id: int, aug_choice: int = 0):
+        """When self.load_from_disk is True, sample a window from the saved h5 file."""
         with h5py.File(self.window_save_path, "r", swmr=True) as f:
             grp = f[f"window_{window_id}"]
             coords = grp[f"coords_{aug_choice}"][()]
@@ -2120,20 +2178,15 @@ class CTCDataAugPretrainedFeats(CTCData):
         
         random_aug_choice = self._rng.integers(0, self.n_augs + 1)
          
-        if self.save_windows:
+        if self.load_from_disk:
             coords, features, labels, timepoints, assoc_matrix, _ = self._sample_from_file(
                     n, random_aug_choice
                 )
         else:
-            track = self.windows[n]
-            # 0 is original, 1 to n_augs are the augmented versions
-            coords = track["coords"][random_aug_choice]
-            features = track["features"][random_aug_choice]
-            assoc_matrix = track["assoc_matrix"]
-            labels = track["labels"]
+            coords, features, labels, timepoints, assoc_matrix, _ = self._sample_from_memory(
+                n, random_aug_choice
+            )
 
-            timepoints = track["timepoints"]
-        
         # if return_dense and isinstance(mask, _CompressedArray):
         #     mask = CTCDataAugPretrainedFeats.decompress(mask)
         # if return_dense and isinstance(img, _CompressedArray):

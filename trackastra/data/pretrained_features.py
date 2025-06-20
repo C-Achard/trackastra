@@ -1068,6 +1068,8 @@ class FeatureExtractorAugWrapper:
             )  # if t == 10 debug
         ]
         features_dict = {t: v for f in features for t, v in f.to_dict().items()}
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         return features_dict
     
     def _compute_original(self, images, masks):
@@ -1096,7 +1098,7 @@ class FeatureExtractorAugWrapper:
         aug_feat_dict = self._compute(aug_images, aug_masks)
         return aug_feat_dict, aug_record
         
-    def compute_all_features(self, images, masks) -> dict:
+    def compute_all_features(self, images, masks, clear_mem=True) -> dict:
         """Augments the images and masks, computes the embeddings, and saves features incrementally."""
         # check existing features
         present, existing_augs, existing_features_dict = self._check_existing()
@@ -1148,6 +1150,13 @@ class FeatureExtractorAugWrapper:
             if str(n + 1) not in existing_aug_ids:
                 self._save_features(n + 1, self.all_aug_features[str(n + 1)])
 
+        if clear_mem:
+            self.extractor.embeddings = self.extractor.embeddings.cpu()
+            self.extractor.model = self.extractor.model.cpu()
+            self.extractor = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        
         return self.all_aug_features
 
     # def _create_feat_dict(self, labels, ts, coords, features):
