@@ -63,8 +63,8 @@ PretrainedFeatsExtractionMode = Literal[
     "nearest_patch",  # Runs on whole image, then finds the nearest patch to the detection in the embedding
     "mean_patches_bbox",  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection's bounding box
     "mean_patches_exact",  # Runs on whole image, then averages the embeddings of all patches that intersect with the detection
-    "max_patches_bbox"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
-    "max_patches_exact"  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
+    "max_patches_bbox",  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
+    "max_patches_exact",  # Runs on whole image, then takes the maximum for each feature dimension of all patches that intersect with the detection
     "median_patches_exact",  # Runs on whole image, then takes the median for each feature dimension of all patches that intersect with the detection
 ]
 

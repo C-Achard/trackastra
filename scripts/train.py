@@ -38,9 +38,10 @@ from trackastra.data import (
 )
 from trackastra.data.pretrained_features import (
     AVAILABLE_PRETRAINED_BACKBONES,
+    PretrainedFeatsExtractionMode,
     PretrainedFeatureExtractorConfig,
 )
-from trackastra.data.wrfeat import _PROPERTIES, WRFeatures, DEFAULT_PROPERTIES
+from trackastra.data.wrfeat import _PROPERTIES, DEFAULT_PROPERTIES, WRFeatures
 from trackastra.model import TrackingTransformer
 from trackastra.utils import (
     blockwise_causal_norm,
@@ -236,11 +237,11 @@ class WrappedLightningModule(pl.LightningModule):
 
         A_pred = self.model(coords, feats, pretrained_feats, padding_mask=padding_mask)
         
-        if self.model.norms: # if dict is not empty, log each entry to wandb
+        if self.model.norms:  # if dict is not empty, log each entry to wandb
             for key, value in self.model.norms.items():
                 # check wandb runner is initialized
                 self.log_dict(
-                    {f"norms/{key}": value}, on_step=True, on_epoch=False, sync_dist=True               
+                    {f"norms/{key}": value}, on_step=True, on_epoch=False, sync_dist=True 
                 )
 
         # remove inf values that might happen due to float16 numerics
@@ -1351,7 +1352,8 @@ def parse_train_args():
     parser.add_argument(
         "--pretrained_feats_mode",
         type=str,
-        choices=["nearest_patch", "mean_patches_bbox", "max_patches_bbox", "mean_patches_exact", "max_patches_exact"],
+        # choices=["nearest_patch", "mean_patches_bbox", "max_patches_bbox", "mean_patches_exact", "max_patches_exact"],
+        choices=list(PretrainedFeatsExtractionMode.__args__),
         default=None,
         help="If mode is pretrained_feats, specify the mode to use for feature extraction",
     )
