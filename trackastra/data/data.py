@@ -1724,6 +1724,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             )
         logger.debug(self.pretrained_feats_augmenter)
         self.augmented_feature_extractor = None
+        self.augmented_image_shapes = None  # used to store the augmented image shapes, used to rotate features
         self.save_windows = True
         
         self._aug_embeds_h5 = None  # used to sample from disk when load_from_disk is True
@@ -1929,6 +1930,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 masks=det_masks,
                 clear_mem=not self.load_from_disk,
             )
+            self.augmented_image_shapes = self.augmented_feature_extractor.image_shape_reference
             # logger.debug(f"AUG DICT keys : {augmented_dict.keys()}")
             if self.load_from_disk:
                 self._aug_embeds_h5 = self.augmented_feature_extractor.get_save_path()
@@ -2256,10 +2258,12 @@ class CTCDataAugPretrainedFeats(CTCData):
             coords = coords0.clone()
         
         if self.rotate_feats:
-            with h5py.File(self._aug_embeds_h5, "r") as f:
-                metadata_json = f[str(random_aug_choice)].attrs["metadata"]
-                metadata = json.loads(metadata_json)
-                image_shape = metadata["image_shape"]
+            # if self.load_from_disk:
+            #     with h5py.File(self._aug_embeds_h5, "r") as f:
+            #         metadata_json = f[str(random_aug_choice)].attrs["metadata"]
+            #         metadata = json.loads(metadata_json)
+            #         image_shape = metadata["image_shape"]
+            image_shape = self.augmented_image_shapes[random_aug_choice]
             pretrained_features = CTCData.rotate_features(
                 pretrained_features, coords, image_shape,
                 n_rot_dims=self.pretrained_feat_dim  # // 2

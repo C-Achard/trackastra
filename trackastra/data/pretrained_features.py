@@ -1001,6 +1001,7 @@ class FeatureExtractorAugWrapper:
         self.aug_pipeline = augmenter
         self.all_aug_features = {}  # n_aug -> {aug_id: {metadata, data}}
         # data -> {t: {lab: {"coords": coords, "features": features}}}
+        self.image_shape_reference = {}
         
         self.extractor.force_recompute = True
         self.extractor.do_save = False  # do not save intermediate features (augmented image embeddings)
@@ -1076,6 +1077,7 @@ class FeatureExtractorAugWrapper:
         """Computes the original features for the images and masks."""
         images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_batch)
         orig_feat_dict = self._compute(images, masks)
+        self.image_shape_reference[0] = images.shape[-2:]
         return orig_feat_dict
     
     def _compute_augmented(self, images, masks):
@@ -1094,8 +1096,9 @@ class FeatureExtractorAugWrapper:
             if im_shape[-1] == 0 or im_shape[-2] == 0:
                 raise ValueError(f"Augmented images have invalid shape {im_shape}. Cannot extract features.")
             self.extractor.orig_image_size = im_shape[-2:]
-            
+        
         aug_feat_dict = self._compute(aug_images, aug_masks)
+        self.image_shape_reference[len(self.all_aug_features)] = aug_images.shape[-2:]
         return aug_feat_dict, aug_record
         
     def compute_all_features(self, images, masks, clear_mem=True) -> dict:
