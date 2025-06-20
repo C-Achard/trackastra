@@ -1625,8 +1625,9 @@ class CTCData(Dataset):
         assert n_rot_dims <= D, "n_rot_dims cannot exceed feature dimension."
 
         # Normalize x and y to [0, 1]
-        x_norm = coords[:, 1] / image_shape[1]
-        y_norm = coords[:, 2] / image_shape[2]
+        H, W = image_shape[-2], image_shape[-1]
+        x_norm = coords[:, 1] / H
+        y_norm = coords[:, 2] / W
         # Compute two angles for x and y
         angle_x = 2 * math.pi * x_norm
         angle_y = 2 * math.pi * y_norm
