@@ -165,6 +165,7 @@ class GaussianBlur(BaseAugmentation):
         }
 
     def _get_aug(self):
+        self.applied_record["gaussian_blur"] = (self.kernel_size, self.sigma)
         return transforms.GaussianBlur(kernel_size=self.kernel_size, sigma=self.sigma)
 
     def __call__(self, images: torch.Tensor, masks: tv_tensors.Mask):
