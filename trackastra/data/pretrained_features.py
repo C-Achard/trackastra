@@ -508,8 +508,9 @@ class FeatureExtractor(ABC):
     
     def extract_embedding(self, masks, timepoints, labels, coords):
         if masks.shape[-2:] != self.orig_image_size:
-            # This should not be occur since each folder is loaded as a separate CTCData
-            logger.warning(f"Input shape change detected: {masks.shape[-2:]} from {self.orig_image_size}.")
+            # This should not be occuring since each folder is loaded as a separate CTCData
+            # However when computing augmented embeddings in parallel, the input size may change
+            logger.debug(f"Input shape change detected: {masks.shape[-2:]} from {self.orig_image_size}.")
             self.orig_image_size = masks.shape[-2:]
         n_regions_per_frame = np.unique(timepoints, return_counts=True)[1]
         tot_regions = n_regions_per_frame.sum()
@@ -1100,8 +1101,23 @@ class FeatureExtractorAugWrapper:
         aug_feat_dict = self._compute(aug_images, aug_masks)
         self.image_shape_reference[len(self.all_aug_features)] = aug_images.shape[-2:]
         return aug_feat_dict, aug_record
-        
-    def compute_all_features(self, images, masks, clear_mem=True) -> dict:
+    
+    def _process_aug(self, n, images, masks, existing_aug_ids, existing_features_dict):
+        if str(f"{n + 1}") in existing_aug_ids:
+            logger.info(f"Augmentation {n + 1} already exists. Skipping computation.")
+            aug_feat_dict = existing_features_dict[str(n + 1)]["data"]
+            aug_record = existing_features_dict[str(n + 1)]["metadata"]
+        else:
+            aug_feat_dict, aug_record = self._compute_augmented(images, masks)
+        result = {
+            "n": n,
+            "metadata": aug_record,
+            "data": aug_feat_dict,
+            "should_save": str(n + 1) not in existing_aug_ids,
+        }
+        return result
+    
+    def compute_all_features(self, images, masks, clear_mem=True, n_workers=4) -> dict:
         """Augments the images and masks, computes the embeddings, and saves features incrementally."""
         # check existing features
         present, existing_augs, existing_features_dict = self._check_existing()
@@ -1138,21 +1154,31 @@ class FeatureExtractorAugWrapper:
         if "0" not in existing_aug_ids:
             self._save_features(0, self.all_aug_features["0"])
         
-        for n in range(self.n_aug):
-            if str(f"{n + 1}") in existing_aug_ids:
-                logger.info(f"Augmentation {n + 1} already exists. Skipping computation.")
-                aug_feat_dict = existing_features_dict[str(n + 1)]["data"]
-                aug_record = existing_features_dict[str(n + 1)]["metadata"]
-            else:
-                aug_feat_dict, aug_record = self._compute_augmented(images, masks)
-            
-            self.all_aug_features[str(n + 1)] = {
-                "metadata": aug_record,
-                "data": aug_feat_dict,
-            }
-            if str(n + 1) not in existing_aug_ids:
-                self._save_features(n + 1, self.all_aug_features[str(n + 1)])
-
+        if n_workers == 0:
+            for n in range(self.n_aug):
+                res = self._process_aug(n, images, masks, existing_aug_ids, existing_features_dict)
+                self.all_aug_features[str(n + 1)] = {
+                    "metadata": res["metadata"],
+                    "data": res["data"],
+                }
+                if res["should_save"]:
+                    self._save_features(n + 1, self.all_aug_features[str(n + 1)])
+        else:
+            # joblib parallel processing
+            results = joblib.Parallel(n_jobs=n_workers, backend="threading")(
+                joblib.delayed(self._process_aug)(
+                    n, images, masks, existing_aug_ids, existing_features_dict
+                ) for n in range(self.n_aug)
+            )
+            for res in results:
+                n = res["n"]
+                self.all_aug_features[str(n + 1)] = {
+                    "metadata": res["metadata"],
+                    "data": res["data"],
+                }
+                if res["should_save"]:
+                    self._save_features(n + 1, self.all_aug_features[str(n + 1)])
+                    
         if clear_mem:
             self.extractor.embeddings = self.extractor.embeddings.cpu()
             self.extractor.model = self.extractor.model.cpu()
