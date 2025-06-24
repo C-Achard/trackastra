@@ -510,7 +510,7 @@ class FeatureExtractor(ABC):
         if masks.shape[-2:] != self.orig_image_size:
             # This should not be occuring since each folder is loaded as a separate CTCData
             # However when computing augmented embeddings in parallel, the input size may change
-            logger.debug(f"Input shape change detected: {masks.shape[-2:]} from {self.orig_image_size}.")
+            # logger.debug(f"Input shape change detected: {masks.shape[-2:]} from {self.orig_image_size}.")
             self.orig_image_size = masks.shape[-2:]
         n_regions_per_frame = np.unique(timepoints, return_counts=True)[1]
         tot_regions = n_regions_per_frame.sum()
@@ -696,7 +696,7 @@ class FeatureExtractor(ABC):
         
         napari.run()
             
-    def _nearest_patches(self, coords, masks=None, norm=True):
+    def _nearest_patches(self, coords, masks=None, norm=False):
         """Finds the nearest patches to the detections in the embedding."""
         # find coordinate patches from detections
         patch_coords = self._map_coords_to_model_grid(coords)
@@ -1117,7 +1117,7 @@ class FeatureExtractorAugWrapper:
         }
         return result
     
-    def compute_all_features(self, images, masks, clear_mem=True, n_workers=4) -> dict:
+    def compute_all_features(self, images, masks, clear_mem=True, n_workers=8) -> dict:
         """Augments the images and masks, computes the embeddings, and saves features incrementally."""
         # check existing features
         present, existing_augs, existing_features_dict = self._check_existing()
