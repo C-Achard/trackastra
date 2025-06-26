@@ -1603,7 +1603,7 @@ class CoTrackerFeatures(FeatureExtractor):
                     self.input_size = (H, W)
                     self.final_grid_size = (H // self.model.stride, W // self.model.stride)
                     logger.debug(f"Updated CoTracker input size: {self.input_size}, final grid size: {self.final_grid_size}")
-                    grid_size = self.final_grid_size
+                grid_size = self.final_grid_size
             else:
                 H, W = image_shape[-2:]
                 grid_size = (H // self.model.stride, W // self.model.stride)
