@@ -20,6 +20,8 @@ from skimage.measure import regionprops, regionprops_table
 from tqdm import tqdm
 
 if TYPE_CHECKING:
+    import torch
+
     from trackastra.data.pretrained_features import FeatureExtractor
 
 logger = logging.getLogger(__name__)
@@ -350,6 +352,7 @@ class WRPretrainedFeatures(WRFeatures):
         feature_extractor: FeatureExtractor,
         t_start: int = 0,
         additional_properties: str | None = None,
+        embeddings: torch.Tensor | None = None,
     ) -> WRPretrainedFeatures:
 
         ndim = img.ndim - 1
@@ -359,8 +362,10 @@ class WRPretrainedFeatures(WRFeatures):
         df, coords, labels, timepoints, properties = cls.get_regionprops_features(
             additional_properties, mask, img, t_start=t_start
         )
-
-        _, features = feature_extractor.extract_embedding(mask, timepoints, labels, coords) 
+        if embeddings is None:
+            _, features = feature_extractor.extract_embedding(mask, timepoints, labels, coords)
+        else:
+            _, features = feature_extractor.extract_embedding(mask, timepoints, labels, coords, embs=embeddings)
         features = features.detach().cpu().numpy()
         feats_dict = OrderedDict(pretrained_feats=features)
         # Add additional features similarly to WRFeatures if any

@@ -1728,7 +1728,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         self.augmented_image_shapes = None  # used to store the augmented image shapes, used to rotate features
         self.save_windows = True
         
-        self._aug_embeds_h5 = None # stores the augmented per-object embeddings
+        self._aug_embeds_h5 = None  # stores the augmented per-object embeddings
         self.delete_augs_after_loading = False
         # self.window_save_path = None
         self._last_selected = None
@@ -1931,7 +1931,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 images=imgs,
                 masks=det_masks,
                 clear_mem=not self.load_from_disk,
-                n_workers=8,
+                n_workers=4,
             )
             self.augmented_image_shapes = self.augmented_feature_extractor.image_shape_reference
             # logger.debug(f"AUG DICT keys : {augmented_dict.keys()}")
