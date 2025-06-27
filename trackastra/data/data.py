@@ -1981,10 +1981,14 @@ class CTCDataAugPretrainedFeats(CTCData):
                     data = augmented_dict[str(aug_id)]["data"]
                     
                     # Coords
-                    coords_at_t = [
-                        data[t][lab]["coords"]
-                        for lab in labels_at_t
-                    ]
+                    coords_at_t = []
+                    for lab in labels_at_t:
+                        try:
+                            coords_at_t.append(data[t][lab]["coords"])
+                        except KeyError:
+                            logger.warning(f"Missing coords for augmentation {aug_id}, time {t}, label {lab}. Skipping.")
+                            continue
+
                     if len(coords_at_t) == 0:  # handle empty frames
                         coords_at_t = np.zeros((0, self.ndim), dtype=int) 
                     else:
@@ -1992,10 +1996,14 @@ class CTCDataAugPretrainedFeats(CTCData):
                     _coords[aug_id].extend(coords_at_t)
                     
                     # Features
-                    features_at_t = [
-                        data[t][lab]["features"]
-                        for lab in labels_at_t
-                    ]
+                    features_at_t = []
+                    for lab in labels_at_t:
+                        try:
+                            features_at_t.append(data[t][lab]["features"])
+                        except KeyError:
+                            logger.warning(f"Missing features for augmentation {aug_id}, time {t}, label {lab}. Skipping.")
+                            continue
+
                     if len(features_at_t) == 0:
                         features_at_t = {}
                     else:
