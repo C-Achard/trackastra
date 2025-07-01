@@ -1728,7 +1728,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         self.augmented_image_shapes = None  # used to store the augmented image shapes, used to rotate features
         self.save_windows = True
         
-        self._aug_embeds_h5 = None # stores the augmented per-object embeddings
+        self._aug_embeds_h5 = None  # stores the augmented per-object embeddings
         self.delete_augs_after_loading = False
         # self.window_save_path = None
         self._last_selected = None
@@ -1931,7 +1931,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 images=imgs,
                 masks=det_masks,
                 clear_mem=not self.load_from_disk,
-                n_workers=8,
+                n_workers=4,
             )
             self.augmented_image_shapes = self.augmented_feature_extractor.image_shape_reference
             # logger.debug(f"AUG DICT keys : {augmented_dict.keys()}")
@@ -1981,10 +1981,14 @@ class CTCDataAugPretrainedFeats(CTCData):
                     data = augmented_dict[str(aug_id)]["data"]
                     
                     # Coords
-                    coords_at_t = [
-                        data[t][lab]["coords"]
-                        for lab in labels_at_t
-                    ]
+                    coords_at_t = []
+                    for lab in labels_at_t:
+                        try:
+                            coords_at_t.append(data[t][lab]["coords"])
+                        except KeyError:
+                            logger.warning(f"Missing coords for augmentation {aug_id}, time {t}, label {lab}. Skipping.")
+                            continue
+
                     if len(coords_at_t) == 0:  # handle empty frames
                         coords_at_t = np.zeros((0, self.ndim), dtype=int) 
                     else:
@@ -1992,10 +1996,14 @@ class CTCDataAugPretrainedFeats(CTCData):
                     _coords[aug_id].extend(coords_at_t)
                     
                     # Features
-                    features_at_t = [
-                        data[t][lab]["features"]
-                        for lab in labels_at_t
-                    ]
+                    features_at_t = []
+                    for lab in labels_at_t:
+                        try:
+                            features_at_t.append(data[t][lab]["features"])
+                        except KeyError:
+                            logger.warning(f"Missing features for augmentation {aug_id}, time {t}, label {lab}. Skipping.")
+                            continue
+
                     if len(features_at_t) == 0:
                         features_at_t = {}
                     else:
