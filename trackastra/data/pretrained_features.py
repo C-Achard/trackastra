@@ -165,6 +165,7 @@ class PretrainedFeatureExtractorConfig:
     additional_features: str | None = None  # for regionprops features
     additional_feat_dim: int = 0  # for regionprops features
     n_augmented_copies: int = 0  # number of augmented copies to create
+    seed: int | None = None  # seed for debug/random
     # pca_components: int = None  # for PCA reduction of the features
     # pca_preprocessor_path: str | Path = None  # for PCA preprocessor path
     # apply_rope: bool = False  # whether to apply RoPE-like rotation to the features based on coordinates
@@ -400,6 +401,7 @@ class FeatureExtractor(ABC):
             additional_features=config.additional_features,
             model_folder=config.model_path,
             normalize_embeddings=config.normalize_embeddings,
+            seed=config.seed if hasattr(config, "seed") else None,
             # n_augmented_copies=config.n_augmented_copies,
             # aug_pipeline=PretrainedAugmentations() if config.n_augmented_copies > 0 else None,
         )
@@ -1903,6 +1905,7 @@ class RandomFeatures(FeatureExtractor):
         batch_size: int = 4,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
         mode: PretrainedFeatsExtractionMode = "nearest_patch",
+        seed: int = 42,
         **kwargs,
         ):
         super().__init__(image_size, save_path, batch_size, device, mode)
@@ -1912,7 +1915,7 @@ class RandomFeatures(FeatureExtractor):
         self.n_channels = 3
         self.hidden_state_size = 128
         
-        self._seed = 42
+        self._seed = seed
         self.device = "cpu"
         self._generator = torch.Generator(device="cpu").manual_seed(self._seed)
         
