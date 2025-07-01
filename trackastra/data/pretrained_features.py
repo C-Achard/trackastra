@@ -1963,7 +1963,7 @@ class RandomFeatures(FeatureExtractor):
         self.n_channels = 3
         self.hidden_state_size = 128
         
-        self._seed = seed
+        self._seed = seed if seed is not None else 42
         self.device = "cpu"
         self._generator = torch.Generator(device="cpu").manual_seed(self._seed)
         
