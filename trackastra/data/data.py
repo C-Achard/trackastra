@@ -1972,63 +1972,86 @@ class CTCDataAugPretrainedFeats(CTCData):
             idx = (ts >= t1) & (ts < t2)
             _ts = ts[idx]
             _labels = labels[idx]
-            
+
             _coords = {aug_id: [] for aug_id in range(n_entries)}
             _features = {aug_id: {} for aug_id in range(n_entries)}
+            present_labels_per_aug = [set() for _ in range(n_entries)]
+
             for aug_id in range(n_entries):
                 for t in range(t1, t2):
                     labels_at_t = _labels[_ts == t]
                     data = augmented_dict[str(aug_id)]["data"]
-                    
-                    # Coords
+
                     coords_at_t = []
                     for lab in labels_at_t:
                         try:
                             coords_at_t.append(data[t][lab]["coords"])
+                            present_labels_per_aug[aug_id].add((t, lab))
                         except KeyError:
-                            logger.warning(f"Missing coords for augmentation {aug_id}, time {t}, label {lab}. Skipping.")
                             continue
-
-                    if len(coords_at_t) == 0:  # handle empty frames
-                        coords_at_t = np.zeros((0, self.ndim), dtype=int) 
+                    if len(coords_at_t) == 0:
+                        coords_at_t = np.zeros((0, self.ndim), dtype=int)
                     else:
                         coords_at_t = np.stack(coords_at_t, axis=0)
                     _coords[aug_id].extend(coords_at_t)
-                    
-                    # Features
+
                     features_at_t = []
                     for lab in labels_at_t:
                         try:
                             features_at_t.append(data[t][lab]["features"])
                         except KeyError:
-                            logger.warning(f"Missing features for augmentation {aug_id}, time {t}, label {lab}. Skipping.")
                             continue
-
                     if len(features_at_t) == 0:
                         features_at_t = {}
                     else:
-                        # Ensure features_at_t is a list of dictionaries
                         features_at_t = [dict(f) for f in features_at_t]
-
                     for _f in features_at_t:
                         for k, v in _f.items():
                             if k not in _features[aug_id]:
                                 _features[aug_id][k] = []
                             _features[aug_id][k].append(v)
-                
-                if not len(_coords[aug_id]) == len(_labels):
-                    raise ValueError(f"Number of coords {len(_coords[aug_id])} does not match number of labels {len(_labels)}")
-            
-                if not len(_features[aug_id]["pretrained_feats"]) == len(_labels):
-                    raise ValueError(f"Number of features {len(_features[aug_id]['pretrained_feats'])} does not match number of labels {len(_labels)}") 
-            
-            for aug_id in range(n_entries):
-                _coords[aug_id] = np.array(_coords[aug_id], dtype=np.float32)
-                for k, v in _features[aug_id].items():
-                    _features[aug_id][k] = np.array(v, dtype=np.float32)
+
+            # --- Filter labels missing in any augmentation --- #
+            # (This can happen due to downsampling in pretrained features,
+            # label has too few pixels to have any valid associated features.
+            # If this occurs for too many labels, check the data and augmentation settings.)
+            common_labels = set.intersection(*present_labels_per_aug)
+            keep_mask = np.array([(t, lab) in common_labels for t, lab in zip(_ts, _labels)])
+            if np.sum(~keep_mask) > 0:
+                logger.warning(
+                    f"Removed {np.sum(~keep_mask)} labels from window {t1} to {t2} "
+                    f", as it is missing in some augmentations. If this occurs for too many labels, "
+                    f" check the data and ensure augmentation settings are appropriate."
+                )
+                missing_labels = set(
+                    (t, lab) for t, lab in zip(_ts[~keep_mask], _labels[~keep_mask])
+                )
+                logger.debug(f"Removed labels: {missing_labels}")
+                _labels = _labels[keep_mask]
+                _ts = _ts[keep_mask]
+                for aug_id in range(n_entries):
+                    filtered_coords = []
+                    filtered_features = {k: [] for k in _features[aug_id].keys()}
+                    idx_counter = 0
+                    for t in range(t1, t2):
+                        labels_at_t = _labels[_ts == t]
+                        n = len(labels_at_t)
+                        filtered_coords.append(_coords[aug_id][idx_counter:idx_counter + n])
+                        for k in _features[aug_id].keys():
+                            filtered_features[k].extend(_features[aug_id][k][idx_counter:idx_counter + n])
+                        idx_counter += n
+                    _coords[aug_id] = np.concatenate(filtered_coords, axis=0) if filtered_coords else np.zeros((0, self.ndim), dtype=np.float32)
+                    for k in filtered_features:
+                        _features[aug_id][k] = np.array(filtered_features[k], dtype=np.float32)
+            else:
+                # No missing labels, just convert to arrays as usual
+                for aug_id in range(n_entries):
+                    _coords[aug_id] = np.array(_coords[aug_id], dtype=np.float32)
+                    for k, v in _features[aug_id].items():
+                        _features[aug_id][k] = np.array(v, dtype=np.float32)
             
             if len(_labels) == 0:
-                # raise ValueError(f"No detections in sample {det_folder}:{t1}")
+                # raise ValueError(f"No detections in sample {det_folder}:{t1}") # empty frames can happen
                 A = np.zeros((0, 0), dtype=bool)
             else:
                 A = _ctc_assoc_matrix(
@@ -2037,7 +2060,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                     self.gt_graph,
                     matching,
                 )
-                
+                        
             w = dict(
                 coords=_coords,
                 t1=t1,

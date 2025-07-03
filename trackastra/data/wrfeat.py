@@ -521,13 +521,9 @@ class WRRandomCrop:
         )
 
         idx = _filter_points(points, shape=crop_size, origin=corner)
-        try:
-            feats = OrderedDict(
-                (k, v[idx]) for k, v in features.features.items()
-            )
-        except Exception as e:
-            # breakpoint()
-            raise e
+        feats = OrderedDict(
+            (k, v[idx]) for k, v in features.features.items()
+        )
         return (
             self.return_type(
                 coords=points[idx],
