@@ -1900,13 +1900,15 @@ class CellposeSAMFeatures(FeatureExtractor):
         return batch[..., 0]  # keep only a single copy of the channel
         
     def _prepare_batches(self, images):
+        if self.do_normalize:
+            images = self.normalize_array(images)
         for i in range(0, len(images), self.batch_size):
             end = i + self.batch_size
             end = min(end, len(images))
             batch = images[i:end]  # (B, H, W)
             ts = range(i, end)
-            if self.do_normalize:
-                batch = self.normalize_array(batch)
+            # if self.do_normalize:
+            # batch = self.normalize_array(batch)
             if len(batch.shape) == 3:
                 batch = batch.unsqueeze(1)
                 batch = batch.repeat(1, 3, 1, 1)
