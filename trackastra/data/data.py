@@ -9,7 +9,6 @@ from pathlib import Path
 from timeit import default_timer
 from typing import TYPE_CHECKING, ClassVar, Literal
 
-import h5py
 import joblib
 import lz4.frame
 import networkx as nx
@@ -17,6 +16,7 @@ import numpy as np
 import pandas as pd
 import tifffile
 import torch
+import zarr
 from numba import njit
 from scipy import ndimage as ndi
 from scipy.spatial.distance import cdist
@@ -1728,7 +1728,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         self.augmented_image_shapes = None  # used to store the augmented image shapes, used to rotate features
         self.save_windows = True
         
-        self._aug_embeds_h5 = None  # stores the augmented per-object embeddings
+        self._aug_embeds_file = None  # stores the augmented per-object embeddings
         self.delete_augs_after_loading = False
         # self.window_save_path = None
         self._last_selected = None
@@ -1741,7 +1741,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         if self.load_from_disk:
             self.window_save_path = self._get_pretrained_features_save_path() / "windows"
             self.window_save_path.mkdir(parents=True, exist_ok=True)
-            self.window_save_path = self.window_save_path / f"{self.config_hash}.h5"
+            self.window_save_path = self.window_save_path / f"{self.config_hash}.zarr"
             logger.debug(f"Windows will be saved to {self.window_save_path}")
         else:
             self.window_save_path = None
@@ -1762,16 +1762,16 @@ class CTCDataAugPretrainedFeats(CTCData):
             self._get_ndim_and_nobj(start, self.windows)
             self.windows = None
             # Clear intermediate data
-            if self.delete_augs_after_loading and self._aug_embeds_h5.exists():
+            if self.delete_augs_after_loading and self._aug_embeds_file.exists():
                 try:
-                    self._aug_embeds_h5.close()
+                    self._aug_embeds_file.close()
                 except Exception as e:
                     logger.warning(f"Could not close HDF5 file: {e}")
                 try:
-                    self._aug_embeds_h5.unlink()
-                    self._aug_embeds_h5 = None
+                    self._aug_embeds_file.unlink()
+                    self._aug_embeds_file = None
                 except Exception as e:
-                    logger.warning(f"Could not delete file {self._aug_embeds_h5}: {e}")
+                    logger.warning(f"Could not delete file {self._aug_embeds_file}: {e}")
             logger.info("Feature extractors cleared.")
         else:
             self._get_ndim_and_nobj(start, self.windows)
@@ -1924,14 +1924,14 @@ class CTCDataAugPretrainedFeats(CTCData):
                 n_aug=self.n_augs,
                 force_recompute=self.force_recompute,
             )
-            self._aug_embeds_h5 = self.augmented_feature_extractor.get_save_path()
+            self._aug_embeds_file = self.augmented_feature_extractor.get_save_path()
             
             # Compute features for all augmentations
             augmented_dict = self.augmented_feature_extractor.compute_all_features(
                 images=imgs,
                 masks=det_masks,
                 clear_mem=not self.load_from_disk,
-                n_workers=4,
+                n_workers=8,
             )
             self.augmented_image_shapes = self.augmented_feature_extractor.image_shape_reference
             # logger.debug(f"AUG DICT keys : {augmented_dict.keys()}")
@@ -2081,32 +2081,26 @@ class CTCDataAugPretrainedFeats(CTCData):
     def _save_windows(self):
         if self.window_save_path is not None:
             self._len = len(self.windows)
-            
             logger.info(f"Saving windows to {self.window_save_path}")
             mode = "w" if self.force_recompute else "a"
-            with h5py.File(self.window_save_path, mode) as f:
-                for i, w in enumerate(self.windows):
-                    group_name = f"window_{i}"
-                    if group_name in f:
-                        try:
-                            del f[group_name]
-                        except KeyError as e:
-                            logger.error(f"Error deleting group {group_name}: {e}")
-                    grp = f.create_group(group_name)
-                    for aug_id in range(self.n_augs + 1):
-                        grp.create_dataset(f"coords_{aug_id}", data=w["coords"][aug_id])
-                        features_group = grp.create_group(f"features_{aug_id}")
-                        for k, v in w["features"][aug_id].items():
-                            features_group.create_dataset(k, data=v)
-                    grp.create_dataset("labels", data=w["labels"])
-                    grp.create_dataset("timepoints", data=w["timepoints"])
-                    grp.create_dataset("assoc_matrix", data=w["assoc_matrix"])
-                    # grp.create_dataset(f"img", data=w["img"])
-                    # grp.create_dataset(f"mask", data=w["mask"])
-                    grp.attrs["t1"] = w["t1"]
+            root = zarr.open_group(str(self.window_save_path), mode=mode)
+            for i, w in enumerate(self.windows):
+                group_name = f"window_{i}"
+                if group_name in root:
+                    del root[group_name]
+                grp = root.create_group(group_name)
+                for aug_id in range(self.n_augs + 1):
+                    grp.create_dataset(f"coords_{aug_id}", data=w["coords"][aug_id])
+                    features_group = grp.create_group(f"features_{aug_id}")
+                    for k, v in w["features"][aug_id].items():
+                        features_group.create_dataset(k, data=v)
+                grp.create_dataset("labels", data=w["labels"])
+                grp.create_dataset("timepoints", data=w["timepoints"])
+                grp.create_dataset("assoc_matrix", data=w["assoc_matrix"])
+                grp.attrs["t1"] = w["t1"]
         else:
-            raise ValueError("No augmented embeddings h5 file set. Cannot save windows.")
-        
+            raise ValueError("No augmented embeddings zarr file set. Cannot save windows.")
+
     def _load_windows(self):
         if not self.load_from_disk:
             if getattr(self, "windows", None) is not None:
@@ -2116,31 +2110,30 @@ class CTCDataAugPretrainedFeats(CTCData):
         if self.window_save_path.exists() and not self.force_recompute:
             self.windows = []
             logger.info(f"Loading windows from {self.window_save_path}")
-            with h5py.File(self.window_save_path, "r") as f:
-                group_names = sorted(  # sort by window number
-                    f.keys(),
-                    key=lambda x: int(x.split("_")[1]) if x.startswith("window_") else x
-                )
-                logger.debug(f"Found {len(group_names)} windows, loading...")
-                for w in group_names:
-                    grp = f[w]
-                    coords = [grp[f"coords_{aug_id}"][()] for aug_id in range(self.n_augs + 1)]
-                    features = {}
-                    for aug_id in range(self.n_augs + 1):
-                        features[aug_id] = {k: grp[f"features_{aug_id}"][k][()] for k in grp[f"features_{aug_id}"].keys()}
-                    labels = grp["labels"][()]
-                    timepoints = grp["timepoints"][()]
-                    assoc_matrix = grp["assoc_matrix"][()]
-                    t1 = grp.attrs["t1"]
-                    
-                    self.windows.append(dict(
-                        coords=coords,
-                        features=features,
-                        labels=labels,
-                        timepoints=timepoints,
-                        assoc_matrix=assoc_matrix,
-                        t1=t1,
-                    ))
+            root = zarr.open_group(str(self.window_save_path), mode="r")
+            group_names = sorted(
+                root.keys(),
+                key=lambda x: int(x.split("_")[1]) if x.startswith("window_") else x
+            )
+            logger.debug(f"Found {len(group_names)} windows, loading...")
+            for w in group_names:
+                grp = root[w]
+                coords = [grp[f"coords_{aug_id}"][...] for aug_id in range(self.n_augs + 1)]
+                features = {}
+                for aug_id in range(self.n_augs + 1):
+                    features[aug_id] = {k: grp[f"features_{aug_id}"][k][...] for k in grp[f"features_{aug_id}"].keys()}
+                labels = grp["labels"][...]
+                timepoints = grp["timepoints"][...]
+                assoc_matrix = grp["assoc_matrix"][...]
+                t1 = grp.attrs["t1"]
+                self.windows.append(dict(
+                    coords=coords,
+                    features=features,
+                    labels=labels,
+                    timepoints=timepoints,
+                    assoc_matrix=assoc_matrix,
+                    t1=t1,
+                ))
             self._len = len(self.windows)
             self._get_ndim_and_nobj(None, self.windows)
             logger.info(f"Loaded {self._len} windows from {self.window_save_path}")
@@ -2162,23 +2155,19 @@ class CTCDataAugPretrainedFeats(CTCData):
         return coords, features, labels, timepoints, assoc_matrix, t1
 
     def _sample_from_file(self, window_id: int, aug_choice: int = 0):
-        """When self.load_from_disk is True, sample a window from the saved h5 file."""
-        with h5py.File(self.window_save_path, "r", swmr=True) as f:
-            grp = f[f"window_{window_id}"]
-            coords = grp[f"coords_{aug_choice}"][()]
-            # features = grp[f"feats_{aug_choice}"][()]
-            # features is now a dict, see _save_windows
-            features = {}
-            for k, v in grp[f"features_{aug_choice}"].items():
-                features[k] = v[()]
-            labels = grp["labels"][()]
-            timepoints = grp["timepoints"][()]
-            assoc_matrix = grp["assoc_matrix"][()]
-            # img = grp["img"][()]
-            # mask = grp["mask"][()]
-            t1 = grp.attrs["t1"]
-            return coords, features, labels, timepoints, assoc_matrix, t1
-    
+        """When self.load_from_disk is True, sample a window from the saved zarr file."""
+        root = zarr.open_group(str(self.window_save_path), mode="r")
+        grp = root[f"window_{window_id}"]
+        coords = grp[f"coords_{aug_choice}"][...]
+        features = {}
+        for k in grp[f"features_{aug_choice}"].keys():
+            features[k] = grp[f"features_{aug_choice}"][...][k][...]
+        labels = grp["labels"][...]
+        timepoints = grp["timepoints"][...]
+        assoc_matrix = grp["assoc_matrix"][...]
+        t1 = grp.attrs["t1"]
+        return coords, features, labels, timepoints, assoc_matrix, t1
+
     def _augment_item(self, item: wrfeat.WRAugPretrainedFeatures, labels, timepoints, assoc_matrix):
         """Apply augmentations to the features."""
         # FIXME some arguments are redundant
@@ -2205,10 +2194,10 @@ class CTCDataAugPretrainedFeats(CTCData):
         try:
             image_shape = self.augmented_image_shapes[aug_choice]
         except KeyError:
-            with h5py.File(self._aug_embeds_h5, "r", swmr=True) as f:
-                metadata_json = f[str(aug_choice)].attrs["metadata"]
-                metadata = json.loads(metadata_json)
-                image_shape = metadata["image_shape"]
+            root = zarr.open_group(str(self._aug_embeds_file), mode="r")
+            metadata_json = root[str(aug_choice)].attrs["metadata"]
+            metadata = json.loads(metadata_json)
+            image_shape = metadata["image_shape"]
         return image_shape
 
     def __len__(self):
