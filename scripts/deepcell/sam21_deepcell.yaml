@@ -1,14 +1,12 @@
-name: deepcell_sam21_aug_no_rot
-# model: /home/achard/tratra_runs_eval/2025-05-28_10-04-50_vanvliet_sam21_aug
+name: deepcell_sam21_aug
 epochs: 1000
 warmup_epochs: 5
 window: 4
 attn_dist_mode: v1
-delta_cutoff: 1
 num_encoder_layers: 4
 num_decoder_layers: 4
 causal_norm: none
-d_model: 128
+d_model: 256
 dropout: 0.05
 pos_embed_per_dim: 32
 lr: 0.0001
@@ -18,83 +16,170 @@ batch_size: 128
 detection_folders:
 - TRA
 crop_size:
-- 320
-- 320
+- 256
+- 256
 attn_positional_bias: rope
 ndim: 2
 # Features config
 features: pretrained_feats_aug
-# features: pretrained_feats
-# features: wrfeat
 #### Additional parameters for pretrained_feats
 augment: 3
 pretrained_n_augs: 25
 pretrained_feats_model: facebook/sam2.1-hiera-base-plus
 reduced_pretrained_feat_dim: 128
-# pretrained_feats_model: weigertlab/tarrow
-# pretrained_model_path: /home/achard/tarrow_runs/vanvliet_backbone_unet_delta1-2
-# pretrained_feats_model: debug/encoded_labels
 pretrained_feats_mode: mean_patches_exact
-# pretrained_feats_mode: nearest_patch
 pretrained_feats_additional_props: regionprops_small
-# feat_embed_per_dim: 8 # Reduce additional dimensions added to the features via positional embedding
-# rotate_features: true
-# disable_xy_coords: true
-# disable_all_coords: True
-cachedir: /home/achard/cache
-outdir: /home/achard/trastra_runs_v2
+rotate_features: true
+cachedir: /backup/achard/cache
+outdir: /home/achard/trastra_v3_deepcell
+# weight_decay: 0.01
 #### Logger
 logger: wandb
-wandb_project: "trackstra_v2_deepcell"
+wandb_project: "trackastra_v3_deepcell"
 # Paths config
-cache: True
-compress: True
-distributed: True
+
+### DEEPCELL SPECIFIC
+delta_cutoff: 2
+spatial_pos_cutoff: 96
+div_upweight: 2
+###
+cache: true
+compress: true
+distributed: false
+num_workers: 24
 
 input_train:
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/00
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/01
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/02
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/03
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/04
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/05
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/06
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/07
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/08
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/09
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/10
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/11
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/12
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/13
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/14
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/15
-# - /home/achard/CTC_DATA/deepcell/deepcell_orig/train/16
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/16_corrected
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/17
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/18
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/19
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/20
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/23
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/25
-
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/00
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/01
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/02
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/03
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/04
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/05
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/06
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/07
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/08
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/09
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/10
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/11
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/12
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/13
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/14
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/15
+# - /backup/achard/CTC_DATA/deepcell/deepcell_full/train/16
+- /backup/achard/CTC_DATA/deepcell/deepcell_orig/train/16_corrected
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/17
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/18
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/19
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/20
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/21
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/22
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/23
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/24
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/25
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/26
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/27
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/28
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/29
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/30
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/31
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/32
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/33
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/34
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/35
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/36
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/37
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/38
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/39
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/40
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/41
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/42
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/43
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/44
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/45
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/46
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/47
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/48
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/49
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/50
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/51
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/52
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/53
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/54
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/55
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/56
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/57
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/58
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/59
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/60
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/61
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/62
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/63
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/64
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/65
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/66
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/67
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/68
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/69
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/70
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/71
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/72
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/73
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/74
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/75
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/76
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/77
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/78
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/79
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/80
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/81
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/82
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/83
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/84
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/85
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/86
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/87
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/88
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/89
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/train/90
 input_val:
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/21
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/22
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/24
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/44
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/train/45
-
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/00
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/01
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/02
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/03
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/04
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/05
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/06
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/07
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/08
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/09
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/10
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/11
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/12
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/13
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/14
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/15
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/16
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/17
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/18
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/19
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/20
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/21
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/22
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/23
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/24
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/25
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/val/26
 
 input_test:
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/00
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/01
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/02
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/03
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/04
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/05
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/06
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/07
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/08
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/09
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/10
-- /home/achard/CTC_DATA/deepcell/deepcell_orig/test/11
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/00
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/01
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/02
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/03
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/04
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/05
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/06
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/07
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/08
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/09
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/10
+- /backup/achard/CTC_DATA/deepcell/deepcell_full/test/11
