@@ -537,7 +537,7 @@ class FeatureExtractor(ABC):
         """Extracts embeddings from the model."""
         pass
     
-    def normalize_batch(self, b):
+    def normalize_array(self, b):
         b = percentile_norm(b)
         if self.rescale_batches:
             b = b * 255.0
@@ -589,14 +589,15 @@ class FeatureExtractor(ABC):
     
     def _prepare_batches(self, images):
         """Prepares batches of images for embedding extraction."""
+        if self.do_normalize:
+            images = self.normalize_array(images)
+            if self.rescale_batches:
+                images = images * 255.0
         for i in range(0, len(images), self.batch_size):
             end = i + self.batch_size
             end = min(end, len(images))
             batch = np.expand_dims(images[i:end], axis=1)  # (B, C, H, W)
-            
-            # required by AutoImageProcessor (PIL Image needs [0, 1] range)
-            if self.do_normalize:
-                batch = self.normalize_batch(batch)
+
             timepoints = range(i, end)
             if self.n_channels > 1:  # repeat channels if needed
                 if self.orig_n_channels > 1 and self.orig_n_channels != self.n_channels:
@@ -1099,13 +1100,13 @@ class FeatureExtractorAugWrapper:
     
     def _compute_original(self, images, masks):
         """Computes the original features for the images and masks."""
-        images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_batch)
+        images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_array)
         orig_feat_dict = self._compute(images, masks)
         self.image_shape_reference[0] = images.shape[-2:]
         return orig_feat_dict
     
     def _compute_augmented(self, images, masks):
-        images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_batch)
+        images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_array)
         aug_images, aug_masks, aug_record = self.aug_pipeline(images, masks)
         
         # check for NaNs
@@ -1805,14 +1806,14 @@ class TAPFeatures(FeatureExtractor):
         feat_dim = model.bb_n_feat
         return model, feat_dim
     
-    def normalize_batch(self, b):
+    def normalize_array(self, b):
         images_batch = tap_normalize(b)
         images_batch = torch.from_numpy(images_batch).to(torch.float32)  # T, H, W
         return images_batch
         
     def _prepare_batches(self, images):
         if self.do_normalize:
-            images = self.normalize_batch(images)
+            images = self.normalize_array(images)
         images = images.unsqueeze(1)  # T, C, H, W
         return images
 
@@ -1878,7 +1879,7 @@ class CellposeSAMFeatures(FeatureExtractor):
         self.channel_first = False
         self.rescale_batches = False
         
-    def normalize_batch(self, images_batch):
+    def normalize_array(self, images_batch):
         batch = torch.zeros(
             (*tuple(images_batch.shape), self.n_channels),  # add a channel dimension
             dtype=torch.float32
@@ -1905,7 +1906,7 @@ class CellposeSAMFeatures(FeatureExtractor):
             batch = images[i:end]  # (B, H, W)
             ts = range(i, end)
             if self.do_normalize:
-                batch = self.normalize_batch(batch)
+                batch = self.normalize_array(batch)
             if len(batch.shape) == 3:
                 batch = batch.unsqueeze(1)
                 batch = batch.repeat(1, 3, 1, 1)

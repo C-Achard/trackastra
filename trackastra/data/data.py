@@ -2018,15 +2018,15 @@ class CTCDataAugPretrainedFeats(CTCData):
             common_labels = set.intersection(*present_labels_per_aug)
             keep_mask = np.array([(t, lab) in common_labels for t, lab in zip(_ts, _labels)])
             if np.sum(~keep_mask) > 0:
-                logger.warning(
-                    f"Removed {np.sum(~keep_mask)} labels from window {t1} to {t2} "
-                    f", as it is missing in some augmentations. If this occurs for too many labels, "
-                    f" check the data and ensure augmentation settings are appropriate."
-                )
                 missing_labels = set(
                     (t, lab) for t, lab in zip(_ts[~keep_mask], _labels[~keep_mask])
                 )
-                logger.debug(f"Removed labels: {missing_labels}")
+                logger.warning(
+                    f"Labels were removed from window {t1} to {t2}"
+                    f", as those labels are missing in some augmentations. If this occurs for too many labels,"
+                    f" check the data and ensure augmentation settings are appropriate."
+                )
+                logger.warning(f"Removed labels: {missing_labels}")
                 _labels = _labels[keep_mask]
                 _ts = _ts[keep_mask]
                 for aug_id in range(n_entries):
