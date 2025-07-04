@@ -1659,6 +1659,7 @@ class CTCDataAugPretrainedFeats(CTCData):
     def __init__(
         self,
         pretrained_n_augmentations: int = 3,
+        n_aug_workers: int = 8,
         force_recompute=False,
         aug_pipeline: PretrainedAugmentations = None,
         load_from_disk: bool = False,
@@ -1696,6 +1697,8 @@ class CTCDataAugPretrainedFeats(CTCData):
             Ignored otherwise.
         pretrained_n_augmentations (int):
             How many augmented versions of the pretrained model embeddings to create.
+        n_aug_workers (int):
+            Number of workers to use for offline augmentation.
         load_from_disk (bool):
             If True, the offline augmented windows are saved to disk and sampled from there.
             If False, all windows are loaded into RAM and sampled from there.
@@ -1712,6 +1715,7 @@ class CTCDataAugPretrainedFeats(CTCData):
             raise ValueError("This class should only be used with pretrained_feats_aug features")
 
         self.n_augs = pretrained_n_augmentations
+        self.n_aug_workers = n_aug_workers
         self.force_recompute = force_recompute
         self.load_from_disk = load_from_disk
         
@@ -1931,7 +1935,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 images=imgs,
                 masks=det_masks,
                 clear_mem=not self.load_from_disk,
-                n_workers=8,
+                n_workers=self.n_aug_workers,
             )
             self.augmented_image_shapes = self.augmented_feature_extractor.image_shape_reference
             # logger.debug(f"AUG DICT keys : {augmented_dict.keys()}")

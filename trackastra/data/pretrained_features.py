@@ -454,11 +454,11 @@ class FeatureExtractor(ABC):
             case mode if mode.endswith("_patches_exact"):
                 if masks is None or labels is None or timepoints is None:
                     raise ValueError("Masks and labels must be provided for the chosen patch mode.")
-                feats_func = partial(self._agg_patches_exact, masks, timepoints, labels, norm=self.normalize_embeddings, embs=embeddings)
+                feats_func = partial(self._agg_patches_exact, masks, timepoints, labels, norm=self.normalize_embeddings)
             case mode if mode.endswith("_patches_bbox"):
                 if masks is None or labels is None or timepoints is None:
                     raise ValueError("Masks and labels must be provided for the chosen patch mode.")
-                feats_func = partial(self._agg_patches_bbox, masks, timepoints, labels, norm=self.normalize_embeddings, embs=embeddings)
+                feats_func = partial(self._agg_patches_bbox, masks, timepoints, labels, norm=self.normalize_embeddings)
             case _:
                 raise NotImplementedError(f"Mode {self.mode} is not implemented.")
 
@@ -508,7 +508,7 @@ class FeatureExtractor(ABC):
             all_frames_embeddings[frame_index] = features[:obj_per_frame]
             features = features[obj_per_frame:]
     
-    def extract_embedding(self, masks, timepoints, labels, coords, embs=None):
+    def extract_embedding(self, masks, timepoints, labels, coords):
         if masks.shape[-2:] != self.orig_image_size:
             # This should not be occuring since each folder is loaded as a separate CTCData
             # However when computing augmented embeddings in parallel, the input size may change
@@ -524,7 +524,6 @@ class FeatureExtractor(ABC):
             coords=coords_txy,
             timepoints=timepoints,
             labels=labels,
-            embeddings=embs,
         )
         if torch.isnan(features).any():
             raise RuntimeError("NaN values found in features.")
@@ -962,7 +961,7 @@ class FeatureExtractor(ABC):
         np.save(save_path, features.cpu().numpy())
         assert save_path.exists(), f"Failed to save features to {save_path}"
     
-    def _load_features(self, assign=True):  # , timepoint):
+    def _load_features(self):  # , timepoint):
         """Loads the features from disk."""
         # load_path = self.save_path / f"{timepoint}_{self.model_name_path}_features.npy"
         if self.embeddings is None:
@@ -978,11 +977,8 @@ class FeatureExtractor(ABC):
                     logger.error("Embeddings will be recomputed.")
                     return None
                 logger.info("Saved embeddings loaded.")
-                if assign:
-                    self.embeddings = torch.tensor(features).to(self.device)
-                    return self.embeddings
-                else:
-                    return torch.tensor(features).to(self.device)
+                self.embeddings = torch.tensor(features).to(self.device)
+                return self.embeddings
             else:
                 logger.info(f"No saved embeddings found at {load_path}. Features will be computed.")
                 return None
@@ -1082,7 +1078,7 @@ class FeatureExtractorAugWrapper:
         # )
         features = [
             wrfeat.WRAugPretrainedFeatures.from_mask_img(
-                embeddings=embs,
+                # embeddings=embs,
                 img=img[np.newaxis], 
                 mask=mask[np.newaxis], 
                 feature_extractor=self.extractor, 
@@ -1616,7 +1612,6 @@ class CoTrackerFeatures(FeatureExtractor):
         self.batch_return_type = "list[np.ndarray]"
 
     def _view_embeddings(self, embeddings, context: dict, **kwargs):
-        try:
             image_shape = context.get("masks_shape", None)
             H, W = image_shape[-2:]
             grid_size = (H // self.model.stride, W // self.model.stride)
@@ -1626,9 +1621,6 @@ class CoTrackerFeatures(FeatureExtractor):
                 self.hidden_state_size,
             )
             return embs, grid_size
-        except Exception as e:
-            breakpoint()
-            raise e
     
     def precompute_image_embeddings(self, images, image_shape=None, **kwargs):  # , windows, window_size):
         """Precomputes embeddings for all images."""
