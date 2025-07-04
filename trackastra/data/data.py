@@ -2165,7 +2165,7 @@ class CTCDataAugPretrainedFeats(CTCData):
         coords = grp[f"coords_{aug_choice}"][...]
         features = {}
         for k in grp[f"features_{aug_choice}"].keys():
-            features[k] = grp[f"features_{aug_choice}"][...][k][...]
+            features[k] = grp[f"features_{aug_choice}"][k][...]
         labels = grp["labels"][...]
         timepoints = grp["timepoints"][...]
         assoc_matrix = grp["assoc_matrix"][...]
