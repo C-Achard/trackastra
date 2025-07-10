@@ -1216,7 +1216,10 @@ class FeatureExtractorAugWrapper:
                     
         if clear_mem:
             self.extractor.embeddings = self.extractor.embeddings.cpu()
-            self.extractor.model = self.extractor.model.cpu()
+            try:
+                self.extractor.model = self.extractor.model.cpu()
+            except AttributeError as e:
+                logger.error(f"Model attribute not found: {e}. Skipping model transfer to CPU.")
             self.extractor = None
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
