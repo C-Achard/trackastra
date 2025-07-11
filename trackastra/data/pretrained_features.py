@@ -1184,14 +1184,14 @@ class FeatureExtractorAugWrapper:
             self._save_features(0, self.all_aug_features["0"])
         
         disable_parallel = False
-        if isinstance(self.extractor, CoTrackerFeatures) or isinstance(self.extractor, TAPFeatures):
+        if isinstance(self.extractor, CoTrackerFeatures) or isinstance(self.extractor, TAPFeatures) or isinstance(self.extractor, MicroSAMFeatures):
             # CoTrackerFeatures and TAP uses a different grid size for each image,
             # which requires a different approach to parallel processing.
             # As a quick fix, parallel processing is disabled
             # TODO make necessary changes to CoTrackerFeatures to allow parallel processing
             disable_parallel = True
-            logger.debug("Disabling parallel processing for CoTrackerFeatures due to variable grid size.")
-        
+            logger.debug(f"Disabling parallel processing for {self.extractor.__class__.__name__} due to variable grid size.")
+
         if n_workers == 0 or disable_parallel:
             for n in range(self.n_aug):
                 res = self._process_aug(n, images, masks, existing_aug_ids, existing_features_dict)
