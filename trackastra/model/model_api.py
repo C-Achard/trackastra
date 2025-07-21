@@ -51,6 +51,7 @@ class Trackastra:
         transformer: TrackingTransformer,
         train_args: dict,
         device: Literal["cuda", "mps", "cpu", "automatic", None] = None,
+        batch_size: int | None = None,
     ):
         """Initialize Trackastra model.
 
@@ -58,13 +59,7 @@ class Trackastra:
             transformer: The underlying transformer model.
             train_args: Training configuration arguments.
             device: Device to run model on ("cuda", "mps", "cpu", "automatic" or None).
-        """
-        """Initialize Trackastra model.
-        
-        Args:
-            transformer: The underlying transformer model.
-            train_args: Training configuration arguments.
-            device: Device to run model on ("cuda", "mps", "cpu", "automatic" or None).
+            batch_size: Batch size for prediction. If None, defaults to 1 on CPU and 16 on GPU.
         """
         if device == "cuda":
             if torch.cuda.is_available():
@@ -104,6 +99,20 @@ class Trackastra:
 
         logger.info(f"Using device {self.device}")
 
+        if batch_size is None:
+            if self.device == "cpu":
+                self.batch_size = 1
+                logger.info(
+                    f"Using batch size {self.batch_size} for predicting on CPU."
+                )
+            else:
+                self.batch_size = 16
+                logger.info(
+                    f"Using batch size {self.batch_size} for model on {self.device}."
+                )
+        else:
+            self.batch_size = batch_size
+
         self.transformer = transformer.to(self.device)
         self.train_args = train_args
         self.imgs_path = None
@@ -111,7 +120,12 @@ class Trackastra:
         self.feature_extractor = None
 
     @classmethod
-    def from_folder(cls, dir: Path | str, device: str | None = None, checkpoint_path: str | None = None):
+    def from_folder(
+        cls,
+        dir: Path | str,
+        device: str | None = None,
+        checkpoint_path: str | None = None,
+    ):
         """Load a Trackastra model from a local folder.
 
         Args:
@@ -185,6 +199,7 @@ class Trackastra:
             features,
             window_size=self.transformer.config["window"],
             progbar_class=progbar_class,
+            as_torch=True,
         )
 
         logger.info("Predicting windows")
@@ -195,6 +210,7 @@ class Trackastra:
             edge_threshold=edge_threshold,
             spatial_dim=masks.ndim - 1,
             progbar_class=progbar_class,
+            batch_size=self.batch_size,
         )
 
         return predictions
@@ -209,7 +225,6 @@ class Trackastra:
         delta_t: int = 1,
         **kwargs,
     ):
-
         logger.info("Running greedy tracker")
         nodes = predictions["nodes"]
         weights = predictions["weights"]
@@ -283,7 +298,7 @@ class Trackastra:
                 save_path = self.imgs_path / "embeddings"
             self.feature_extractor = FeatureExtractor.from_model_name(
                 self.train_args["pretrained_feats_model"],
-                imgs.shape[-2:], 
+                imgs.shape[-2:],
                 save_path=save_path,
                 mode=self.train_args["pretrained_feats_mode"],
                 device="cuda" if torch.cuda.is_available() else "cpu",
@@ -297,6 +312,7 @@ class Trackastra:
             progbar_class=progbar_class,
             n_workers=n_workers,
         )
+
         track_graph = self._track_from_predictions(predictions, mode=mode, **kwargs)
         return track_graph
 
@@ -336,7 +352,7 @@ class Trackastra:
 
         self.imgs_path = imgs_path
         self.masks_path = masks_path
-        
+
         if imgs_path.is_dir():
             imgs = load_tiff_timeseries(imgs_path)
         else:
@@ -366,7 +382,7 @@ class Trackastra:
 
         if imgs.shape != masks.shape:
             raise RuntimeError(
-                f"Img shape {imgs.shape} and mask shape {masks. shape} do not match."
+                f"Img shape {imgs.shape} and mask shape {masks.shape} do not match."
             )
 
         return self.track(

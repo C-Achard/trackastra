@@ -184,8 +184,14 @@ def graph_to_napari_tracks(
 
         for c in nodes:
             node = graph.nodes[c]
-            t = node["time"]
-            coord = node["coords"]
+            try:
+                t = node["time"]
+            except KeyError:
+                t = node["t"]
+            try:
+                coord = node["coords"]
+            except KeyError:
+                coord = (node["x"], node["y"])
             tracks.append([label, t, *list(coord)])
 
             for p in properties:

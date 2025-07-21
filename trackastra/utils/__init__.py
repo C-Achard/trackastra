@@ -5,6 +5,7 @@ from .utils import (
     blockwise_causal_norm,
     blockwise_sum,
     masks2properties,
+    none_or_path,
     normalize,
     preallocate_memory,
     random_label_cmap,

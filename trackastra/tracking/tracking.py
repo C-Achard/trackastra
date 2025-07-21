@@ -55,9 +55,9 @@ def track_greedy(
 
     for edge in tqdm(edges, desc="Greedily matched edges"):
         node_in, node_out, features = edge
-        assert (
-            features[edge_attr] <= 1.0
-        ), "Edge weights are assumed to be normalized to [0,1]"
+        assert features[edge_attr] <= 1.0, (
+            "Edge weights are assumed to be normalized to [0,1]"
+        )
         # assumes sorted edges
         if features[edge_attr] < threshold:
             break
@@ -110,18 +110,12 @@ def build_graph(
 
     graph = TrackGraph(G, frame_attribute="time")
     frame_pairs = zip(
-        chain(
-            *[
-                list(range(graph.t_begin, graph.t_end - d))
-                for d in range(1, delta_t + 1)
-            ]
-        ),
-        chain(
-            *[
-                list(range(graph.t_begin + d, graph.t_end))
-                for d in range(1, delta_t + 1)
-            ]
-        ),
+        chain(*[
+            list(range(graph.t_begin, graph.t_end - d)) for d in range(1, delta_t + 1)
+        ]),
+        chain(*[
+            list(range(graph.t_begin + d, graph.t_end)) for d in range(1, delta_t + 1)
+        ]),
     )
     iterator = tqdm(
         frame_pairs,
