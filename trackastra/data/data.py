@@ -2618,6 +2618,8 @@ def _compress_img_mask_preproc(img, mask, features):
 
 
 def pad_tensor(x, n_max: int, dim=0, value=0):
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
     n = x.shape[dim]
     if n_max < n:
         raise ValueError(f"pad_tensor: n_max={n_max} must be larger than n={n} !")

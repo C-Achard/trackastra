@@ -33,7 +33,7 @@ def predict(batch: list[dict], model: TrackingTransformer) -> np.ndarray:
         Array of association scores between objects.
     """
     padded_batch = collate_sequence_padding(batch)
-    if batch["features"] is not None:
+    if padded_batch["features"] is not None:
         feats = padded_batch["features"]
     else:
         feats = None
