@@ -7,11 +7,12 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-import h5py
 import joblib
 import numpy as np
 import torch
 import torch.nn.functional as F
+import zarr
+from numcodecs import Blosc
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from skimage.measure import regionprops
 from tqdm import tqdm
@@ -293,6 +294,9 @@ class FeatureExtractor(ABC):
         self.device = device
         # Parameters for embedding extraction
         self.mode = mode
+        # If running FeatureExtractor in a parallelized context, set to False to avoid overhead 
+        # from spawning many threads within the parallelized context.
+        self.parallel = True
         self.additional_features = None
         self.apply_rope = False  # deprecated, use "rotate_features" in CTCData # TODO remove
         self.normalize_embeddings = normalize_embeddings
@@ -440,7 +444,7 @@ class FeatureExtractor(ABC):
         masks=None, 
         timepoints=None,
         labels=None,
-        embeddings=None
+        # embeddings=None
     ) -> torch.Tensor:
         feats = torch.zeros(len(coords), self.hidden_state_size, device=self.device)
         match self.mode:
@@ -450,11 +454,11 @@ class FeatureExtractor(ABC):
             case mode if mode.endswith("_patches_exact"):
                 if masks is None or labels is None or timepoints is None:
                     raise ValueError("Masks and labels must be provided for the chosen patch mode.")
-                feats_func = partial(self._agg_patches_exact, masks, timepoints, labels, norm=self.normalize_embeddings, embs=embeddings)
+                feats_func = partial(self._agg_patches_exact, masks, timepoints, labels, norm=self.normalize_embeddings)
             case mode if mode.endswith("_patches_bbox"):
                 if masks is None or labels is None or timepoints is None:
                     raise ValueError("Masks and labels must be provided for the chosen patch mode.")
-                feats_func = partial(self._agg_patches_bbox, masks, timepoints, labels, norm=self.normalize_embeddings, embs=embeddings)
+                feats_func = partial(self._agg_patches_bbox, masks, timepoints, labels, norm=self.normalize_embeddings)
             case _:
                 raise NotImplementedError(f"Mode {self.mode} is not implemented.")
 
@@ -476,7 +480,7 @@ class FeatureExtractor(ABC):
         missing = self._check_missing_embeddings()
         all_embeddings = torch.zeros(len(images), self.final_grid_size[0] * self.final_grid_size[1], self.hidden_state_size, device=self.device)
         if missing:
-            for ts, batches in tqdm(self._prepare_batches(images), total=len(images) // self.batch_size, desc="Computing embeddings"):
+            for ts, batches in tqdm(self._prepare_batches(images), total=len(images) // self.batch_size, desc="Computing embeddings", leave=False):
                 embeddings = self._run_model(batches, **kwargs)
                 if torch.any(embeddings.isnan()):
                     raise RuntimeError("NaN values found in features.")
@@ -485,7 +489,7 @@ class FeatureExtractor(ABC):
                 assert embeddings.shape[-1] == self.hidden_state_size
             self.embeddings = all_embeddings
             self._save_features(all_embeddings)
-        logger.debug(f"Precomputed embeddings shape: {self.embeddings.shape}")
+        # logger.debug(f"Precomputed embeddings shape: {self.embeddings.shape}")
         return self.embeddings
 
     def _extract_region_embeddings(self, all_frames_embeddings, window, start_index, remaining=None):
@@ -504,12 +508,12 @@ class FeatureExtractor(ABC):
             all_frames_embeddings[frame_index] = features[:obj_per_frame]
             features = features[obj_per_frame:]
     
-    def extract_embedding(self, masks, timepoints, labels, coords, embs=None):
-        if masks.shape[-2:] != self.orig_image_size:
-            # This should not be occuring since each folder is loaded as a separate CTCData
-            # However when computing augmented embeddings in parallel, the input size may change
-            # logger.debug(f"Input shape change detected: {masks.shape[-2:]} from {self.orig_image_size}.")
-            self.orig_image_size = masks.shape[-2:]
+    def extract_embedding(self, masks, timepoints, labels, coords):
+        # if masks.shape[-2:] != self.orig_image_size:
+        # This should not be occuring since each folder is loaded as a separate CTCData
+        # However when computing augmented embeddings in parallel, the input size may change
+        # logger.debug(f"Input shape change detected: {masks.shape[-2:]} from {self.orig_image_size}.")
+        # self.orig_image_size = masks.shape[-2:]
         n_regions_per_frame = np.unique(timepoints, return_counts=True)[1]
         tot_regions = n_regions_per_frame.sum()
         coords_txy = np.concatenate((timepoints[:, None], coords), axis=-1)
@@ -520,7 +524,6 @@ class FeatureExtractor(ABC):
             coords=coords_txy,
             timepoints=timepoints,
             labels=labels,
-            embeddings=embs,
         )
         if torch.isnan(features).any():
             raise RuntimeError("NaN values found in features.")
@@ -533,7 +536,7 @@ class FeatureExtractor(ABC):
         """Extracts embeddings from the model."""
         pass
     
-    def normalize_batch(self, b):
+    def normalize_array(self, b):
         b = percentile_norm(b)
         if self.rescale_batches:
             b = b * 255.0
@@ -585,14 +588,15 @@ class FeatureExtractor(ABC):
     
     def _prepare_batches(self, images):
         """Prepares batches of images for embedding extraction."""
+        if self.do_normalize:
+            images = self.normalize_array(images)
+            if self.rescale_batches:
+                images = images * 255.0
         for i in range(0, len(images), self.batch_size):
             end = i + self.batch_size
             end = min(end, len(images))
             batch = np.expand_dims(images[i:end], axis=1)  # (B, C, H, W)
-            
-            # required by AutoImageProcessor (PIL Image needs [0, 1] range)
-            if self.do_normalize:
-                batch = self.normalize_batch(batch)
+
             timepoints = range(i, end)
             if self.n_channels > 1:  # repeat channels if needed
                 if self.orig_n_channels > 1 and self.orig_n_channels != self.n_channels:
@@ -874,17 +878,19 @@ class FeatureExtractor(ABC):
             return agg(patch_embeddings, dim=0)
 
         # Parallel processing
-        res = joblib.Parallel(n_jobs=8, backend="threading")(
-            joblib.delayed(process_region)(i, t, masks=masks) for i, t in enumerate(timepoints_shifted)
-        )
-        for i, r in enumerate(res):
-            # If agg is torch.max or torch.median, extract only the values
-            if isinstance(r, torch.return_types.max) or isinstance(r, torch.return_types.median):
-                feats[i] = r.values
-            else:
-                feats[i] = r
-        # for i, t in enumerate(timepoints_shifted):
-        #     feats[i] = process_region(i, t, masks)
+        if self.parallel:
+            res = joblib.Parallel(n_jobs=8, backend="threading")(
+                joblib.delayed(process_region)(i, t, masks=masks) for i, t in enumerate(timepoints_shifted)
+            )
+            for i, r in enumerate(res):
+                # If agg is torch.max or torch.median, extract only the values
+                if isinstance(r, torch.return_types.max) or isinstance(r, torch.return_types.median):
+                    feats[i] = r.values
+                else:
+                    feats[i] = r
+        else:
+            for i, t in enumerate(timepoints_shifted):
+                feats[i] = process_region(i, t, masks)
         if self._debug_view:
             napari.run()
         # if norm:
@@ -955,7 +961,7 @@ class FeatureExtractor(ABC):
         np.save(save_path, features.cpu().numpy())
         assert save_path.exists(), f"Failed to save features to {save_path}"
     
-    def _load_features(self, assign=True):  # , timepoint):
+    def _load_features(self):  # , timepoint):
         """Loads the features from disk."""
         # load_path = self.save_path / f"{timepoint}_{self.model_name_path}_features.npy"
         if self.embeddings is None:
@@ -971,11 +977,8 @@ class FeatureExtractor(ABC):
                     logger.error("Embeddings will be recomputed.")
                     return None
                 logger.info("Saved embeddings loaded.")
-                if assign:
-                    self.embeddings = torch.tensor(features).to(self.device)
-                    return self.embeddings
-                else:
-                    return torch.tensor(features).to(self.device)
+                self.embeddings = torch.tensor(features).to(self.device)
+                return self.embeddings
             else:
                 logger.info(f"No saved embeddings found at {load_path}. Features will be computed.")
                 return None
@@ -1019,10 +1022,13 @@ class FeatureExtractorAugWrapper:
         
         self.extractor.force_recompute = True
         self.extractor.do_save = False  # do not save intermediate features (augmented image embeddings)
-        # instead, we will save the augmented features + coordinates on a per-object basis in an HDF5 file
+        # instead, we will save the augmented features + coordinates on a per-object basis in a zarr store
         self.extractor.do_normalize = False 
+        self.extractor.parallel = False 
+        # already parallelized, faster this way since it avoids the overhead of spawning 
+        # many small processes within the parallelized augmentation pipeline
 
-        # self.save_path = None
+        self._zarr_sync = zarr.ProcessSynchronizer(str(self.get_save_path()) + ".sync")
         self.force_recompute = force_recompute
         
         self._debug_view = None
@@ -1031,20 +1037,18 @@ class FeatureExtractorAugWrapper:
         root_path = self.extractor.save_path / "aug"
         if not root_path.exists():
             root_path.mkdir(parents=True, exist_ok=True)
-        return root_path / f"{self.extractor.model_name_path}_aug.h5"
+        return root_path / f"{self.extractor.model_name_path}_aug.zarr"
         
     def _check_existing(self):
-        """Checks if an h5 file already exists, and which augmentations are already saved."""
         save_path = self.get_save_path()
         if not save_path.exists() or self.force_recompute:
-            logger.debug(f"Augmentation file {save_path} does not exist or force_recompute is True. Recomputing features.")
+            logger.debug(f"Augmentation zarr store {save_path} does not exist or force_recompute is True. Recomputing features.")
             return False, None, None
         logger.info(f"Loading existing features from {save_path}...")
-        with h5py.File(save_path, "r", swmr=True) as f:
-            existing_augs = list(f.keys())
-            # remove all keys that are not integers
-            existing_augs = [aug for aug in existing_augs if "window" not in aug]
-            features_dict = self.load_all_features()
+        # root = zarr.open_group(str(save_path), mode="r")
+        # existing_augs = [k for k in root.keys() if k.isdigit()]
+        features_dict = self.load_all_features()
+        existing_augs = list(features_dict.keys())
         logger.info("Done.")
         return True, existing_augs, features_dict
     
@@ -1074,7 +1078,7 @@ class FeatureExtractorAugWrapper:
         # )
         features = [
             wrfeat.WRAugPretrainedFeatures.from_mask_img(
-                embeddings=embs,
+                # embeddings=embs,
                 img=img[np.newaxis], 
                 mask=mask[np.newaxis], 
                 feature_extractor=self.extractor, 
@@ -1092,13 +1096,13 @@ class FeatureExtractorAugWrapper:
     
     def _compute_original(self, images, masks):
         """Computes the original features for the images and masks."""
-        images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_batch)
+        images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_array)
         orig_feat_dict = self._compute(images, masks)
         self.image_shape_reference[0] = images.shape[-2:]
         return orig_feat_dict
     
-    def _compute_augmented(self, images, masks):
-        images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_batch)
+    def _compute_augmented(self, images, masks, n):
+        images, masks = self.aug_pipeline.preprocess(images, masks, normalize_func=self.extractor.normalize_array)
         aug_images, aug_masks, aug_record = self.aug_pipeline(images, masks)
         
         # check for NaNs
@@ -1110,12 +1114,15 @@ class FeatureExtractorAugWrapper:
         if im_shape[-2:] != self.extractor.orig_image_size:
             # if isinstance(self.extractor, TAPFeatures):
             # self.extractor.final_grid_size = (im_shape[-2], im_shape[-1]) # TAP features have same dims as images 
+            if isinstance(self.extractor, CoTrackerFeatures):
+                stride = self.extractor.model.stride
+                self.extractor.final_grid_size = (im_shape[-2] // stride, im_shape[-1] // stride)
             if im_shape[-1] == 0 or im_shape[-2] == 0:
                 raise ValueError(f"Augmented images have invalid shape {im_shape}. Cannot extract features.")
             self.extractor.orig_image_size = im_shape[-2:]
         
         aug_feat_dict = self._compute(aug_images, aug_masks)
-        self.image_shape_reference[len(self.all_aug_features)] = aug_images.shape[-2:]
+        self.image_shape_reference[n] = aug_images.shape[-2:]
         return aug_feat_dict, aug_record
     
     def _process_aug(self, n, images, masks, existing_aug_ids, existing_features_dict):
@@ -1125,13 +1132,15 @@ class FeatureExtractorAugWrapper:
                 aug_feat_dict = existing_features_dict[str(n + 1)]["data"]
                 aug_record = existing_features_dict[str(n + 1)]["metadata"]
             else:
-                aug_feat_dict, aug_record = self._compute_augmented(images, masks)
+                aug_feat_dict, aug_record = self._compute_augmented(images, masks, n=n + 1)
             result = {
                 "n": n,
                 "metadata": aug_record,
                 "data": aug_feat_dict,
-                "should_save": str(n + 1) not in existing_aug_ids,
+                # "should_save": str(n + 1) not in existing_aug_ids,
             }
+            if str(n + 1) not in existing_aug_ids:
+                self._save_features(n + 1, result)
             return result
         except Exception as e:
             logger.error(f"Error processing augmentation {n + 1}: {e}")
@@ -1174,15 +1183,21 @@ class FeatureExtractorAugWrapper:
         if "0" not in existing_aug_ids:
             self._save_features(0, self.all_aug_features["0"])
         
-        if n_workers == 0:
+        disable_parallel = False
+        if isinstance(self.extractor, CoTrackerFeatures) or isinstance(self.extractor, TAPFeatures) or isinstance(self.extractor, MicroSAMFeatures):
+            # CoTrackerFeatures and TAP uses a different grid size for each image,
+            # which requires a different approach to parallel processing.
+            # As a quick fix, parallel processing is disabled
+            # TODO make necessary changes to CoTrackerFeatures to allow parallel processing
+            disable_parallel = True
+            logger.debug(f"Disabling parallel processing for {self.extractor.__class__.__name__} due to variable grid size.")
+
+        if n_workers == 0 or disable_parallel:
             for n in range(self.n_aug):
                 res = self._process_aug(n, images, masks, existing_aug_ids, existing_features_dict)
-                self.all_aug_features[str(n + 1)] = {
-                    "metadata": res["metadata"],
-                    "data": res["data"],
-                }
-                if res["should_save"]:
-                    self._save_features(n + 1, self.all_aug_features[str(n + 1)])
+                self.all_aug_features[str(n + 1)] = res
+                # if res["should_save"]:
+                # self._save_features(n + 1, self.all_aug_features[str(n + 1)])
         else:
             # joblib parallel processing
             results = joblib.Parallel(n_jobs=n_workers, backend="threading")(
@@ -1196,12 +1211,15 @@ class FeatureExtractorAugWrapper:
                     "metadata": res["metadata"],
                     "data": res["data"],
                 }
-                if res["should_save"]:
-                    self._save_features(n + 1, self.all_aug_features[str(n + 1)])
+                # if res["should_save"]:
+                # self._save_features(n + 1, self.all_aug_features[str(n + 1)])
                     
         if clear_mem:
             self.extractor.embeddings = self.extractor.embeddings.cpu()
-            self.extractor.model = self.extractor.model.cpu()
+            try:
+                self.extractor.model = self.extractor.model.cpu()
+            except AttributeError as e:
+                logger.error(f"Model attribute not found: {e}. Skipping model transfer to CPU.")
             self.extractor = None
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -1224,40 +1242,46 @@ class FeatureExtractorAugWrapper:
     #     return aug_feat_dict
 
     def _save_features(self, aug_id: int, aug_data: dict):
-        """Saves the features for a specific augmentation to disk as HDF5."""
+        """Saves the features for a specific augmentation to disk as zarr (fast, flat layout)."""
+        import zarr
+
         save_path = self.get_save_path()
+        compressor = Blosc(cname='zstd', clevel=3, shuffle=Blosc.BITSHUFFLE)
+        root = zarr.open_group(str(save_path), mode="a", synchronizer=self._zarr_sync)
+        group_name = str(aug_id)
+        if group_name in root:
+            del root[group_name]
+        group = root.create_group(group_name)
+        group.attrs["metadata"] = json.dumps(aug_data.get("metadata", {}))
 
-        with h5py.File(save_path, "a", libver="latest") as f:
-            # Check if the group already exists and delete it if necessary
-            f.swmr_mode = True
-            group_name = str(aug_id)
-            if group_name in f:
-                try:
-                    del f[group_name]
-                except KeyError as e:
-                    logger.error(f"Error deleting group {group_name}: {e}")
+        coords_list = []
+        t_list = []
+        lab_list = []
+        features_dict = {}
 
-            group = f.create_group(group_name)
-            # Store applied augmentations as attributes
-            try:
-                group.attrs["metadata"] = json.dumps(aug_data["metadata"])
-            except KeyError:
-                pass
+        for t, data in aug_data["data"].items():
+            for lab, lab_data in data.items():
+                coords_list.append(lab_data["coords"])
+                t_list.append(t)
+                lab_list.append(lab)
+                for key, value in lab_data["features"].items():
+                    if key not in features_dict:
+                        features_dict[key] = []
+                    features_dict[key].append(value)
 
-            # Save data for each timepoint and label
-            for t, data in aug_data["data"].items():
-                t_group = group.create_group(f"timepoint_{t}")
-                for lab, lab_data in data.items():
-                    lab_group = t_group.create_group(f"label_{lab}")
-                    lab_group.create_dataset("coords", data=lab_data["coords"], compression="gzip")
-                    # lab_group.create_dataset("features", data=lab_data["features"], compression="gzip")
-                    
-                    features_group = lab_group.create_group("features")
-                    for key, value in lab_data["features"].items():
-                        features_group.create_dataset(key, data=value, compression="gzip")
+        coords_arr = np.stack(coords_list)
+        t_arr = np.array(t_list)
+        lab_arr = np.array(lab_list)
+        group.create_dataset("coords", data=coords_arr, compressor=compressor)
+        group.create_dataset("timepoints", data=t_arr, compressor=compressor)
+        group.create_dataset("labels", data=lab_arr, compressor=compressor)
 
-        logger.info(f"Augmented features for augmentation {aug_id} saved to {save_path}.")
+        features_group = group.create_group("features")
+        for key, values in features_dict.items():
+            features_group.create_dataset(key, data=np.stack(values), compressor=compressor)
 
+        # logger.debug(f"Augmented features for augmentation {aug_id} saved to {save_path}.")
+    
     def load_all_features(self) -> dict:
         """Loads all features from disk."""
         save_path = self.get_save_path()
@@ -1272,54 +1296,75 @@ class FeatureExtractorAugWrapper:
         return features
 
     @staticmethod
-    def load_features(path: str | Path, additional_props: str | None = None) -> dict:
-        """Loads the features for a specific augmentation from disk."""
+    def load_features(path: str | Path, additional_props: str | None = None, n_jobs: int = 12) -> dict:
+        """Loads the features for all augmentations from disk (flat zarr layout, parallelized)."""
+        import joblib
+
         if not isinstance(path, Path):
             path = Path(path)
         if not path.exists():
             raise FileNotFoundError(f"Path {path} does not exist.")
-        
+
         if additional_props is not None:
             required_features = wrfeat._PROPERTIES[additional_props]
             if len(required_features) == 0:
                 required_features = "pretrained_feats"
             else:
                 required_features += ("pretrained_feats", )
-        
-        all_data = {}
-        with h5py.File(path, "r", swmr=True) as f:
-            logger.debug(f"Exisiting groups : {list(f.keys())}")
-            for aug_id, group in f.items():
-                if "window" in aug_id:
-                    continue
-                try:
-                    metadata = json.loads(group.attrs["metadata"])
-                except KeyError:
-                    metadata = None
+
+        root = zarr.open_group(str(path), mode="r")
+        aug_ids = [k for k in root.keys() if k.isdigit()]
+
+        def _load_single(aug_id):
+            missing = False
+            if aug_id not in root:
+                missing = True
+            group = root[aug_id]
+            try:
+                metadata = json.loads(group.attrs["metadata"])
+            except KeyError:
+                metadata = None
+            try:
+                coords_arr = group["coords"][...]
+                t_arr = group["timepoints"][...]
+                lab_arr = group["labels"][...]
+                features_group = group["features"]
+                features_dict = {}
+                for key in features_group.keys():
+                    if additional_props is not None and key not in required_features:
+                        continue
+                    features_dict[key] = features_group[key][...]
+                if additional_props is not None:
+                    missing_keys = [k for k in required_features if k not in features_dict]
+                    if missing_keys:
+                        raise RuntimeError(
+                            f"Missing required features {missing_keys} in augmentation {aug_id}. "
+                            f"Please delete the cache at {path} and recompute the features."
+                        )
+
                 data = {}
-                for t, t_group in group.items():
-                    t = int(t.split("_")[-1])
-                    data[t] = {}
-                    for lab, lab_group in t_group.items():
-                        lab = int(lab.split("_")[-1])
-                        features = {}
-                        if "features" in lab_group:
-                            for key, dataset in lab_group["features"].items():
-                                if additional_props is not None:
-                                    if key in required_features:
-                                        features[key] = np.array(dataset)
-                                else:
-                                    features[key] = np.array(dataset)
-                            if len(features) == 0:
-                                raise ValueError(f"No features found for label {lab} in timepoint {t}.")
-                        data[t][lab] = {
-                            "coords": np.array(lab_group["coords"]),
-                            "features": features,
-                        }
-                all_data[aug_id] = {
-                    "metadata": metadata,
-                    "data": data,
-                }
+                for i in range(len(t_arr)):
+                    t = int(t_arr[i])
+                    lab = int(lab_arr[i])
+                    if t not in data:
+                        data[t] = {}
+                    feats = {k: features_dict[k][i] for k in features_dict}
+                    data[t][lab] = {
+                        "coords": coords_arr[i],
+                        "features": feats,
+                    }
+                return aug_id, {"metadata": metadata, "data": data}
+            except KeyError as e:
+                logger.error(f"KeyError: {e} - Augmentation {aug_id} is missing some data. Skipping.")
+                missing = True
+            if missing:
+                return aug_id, None
+            raise RuntimeError(f"Augmentation {aug_id} could not be loaded. Missing data or invalid format.")
+
+        results = joblib.Parallel(n_jobs=n_jobs, backend="threading")(
+            joblib.delayed(_load_single)(aug_id) for aug_id in aug_ids
+        )
+        all_data = {aug_id: aug_data for aug_id, aug_data in results if aug_data is not None}
         return all_data
        
 
@@ -1582,7 +1627,6 @@ class CoTrackerFeatures(FeatureExtractor):
         self.batch_return_type = "list[np.ndarray]"
 
     def _view_embeddings(self, embeddings, context: dict, **kwargs):
-        try:
             image_shape = context.get("masks_shape", None)
             H, W = image_shape[-2:]
             grid_size = (H // self.model.stride, W // self.model.stride)
@@ -1592,9 +1636,6 @@ class CoTrackerFeatures(FeatureExtractor):
                 self.hidden_state_size,
             )
             return embs, grid_size
-        except Exception as e:
-            breakpoint()
-            raise e
     
     def precompute_image_embeddings(self, images, image_shape=None, **kwargs):  # , windows, window_size):
         """Precomputes embeddings for all images."""
@@ -1613,7 +1654,7 @@ class CoTrackerFeatures(FeatureExtractor):
             missing = self._check_missing_embeddings()
             all_embeddings = torch.zeros(len(images), grid_size[0] * grid_size[1], self.hidden_state_size, device=self.device)
             if missing:
-                for ts, batches in tqdm(self._prepare_batches(images), total=len(images) // self.batch_size, desc="Computing embeddings"):
+                for ts, batches in tqdm(self._prepare_batches(images), total=len(images) // self.batch_size, desc="Computing embeddings", leave=False):
                     try:
                         embeddings = self._run_model(batches, image_shape, **kwargs)
                     except Exception as e:
@@ -1626,7 +1667,7 @@ class CoTrackerFeatures(FeatureExtractor):
                     assert embeddings.shape[-1] == self.hidden_state_size
                 self.embeddings = all_embeddings
                 self._save_features(all_embeddings)
-            logger.debug(f"Precomputed embeddings shape: {self.embeddings.shape}")
+            # logger.debug(f"Precomputed embeddings shape: {self.embeddings.shape}")
             return self.embeddings
         except Exception as e:
             logger.error(f"Error occurred while precomputing embeddings: {e}")
@@ -1772,14 +1813,14 @@ class TAPFeatures(FeatureExtractor):
         feat_dim = model.bb_n_feat
         return model, feat_dim
     
-    def normalize_batch(self, b):
+    def normalize_array(self, b):
         images_batch = tap_normalize(b)
         images_batch = torch.from_numpy(images_batch).to(torch.float32)  # T, H, W
         return images_batch
         
     def _prepare_batches(self, images):
         if self.do_normalize:
-            images = self.normalize_batch(images)
+            images = self.normalize_array(images)
         images = images.unsqueeze(1)  # T, C, H, W
         return images
 
@@ -1791,7 +1832,7 @@ class TAPFeatures(FeatureExtractor):
         self.orig_image_size = im_shape
         self.final_grid_size = im_shape
         with torch.no_grad():
-            for i in tqdm(range(0, len(images), self.batch_size), desc="Computing TAP features"):
+            for i in tqdm(range(0, len(images), self.batch_size), desc="Computing TAP features", leave=False):
                 batch = images[i : i + self.batch_size]
                 batch = batch.to(self.device)
                 out = self.model(batch)
@@ -1845,7 +1886,7 @@ class CellposeSAMFeatures(FeatureExtractor):
         self.channel_first = False
         self.rescale_batches = False
         
-    def normalize_batch(self, images_batch):
+    def normalize_array(self, images_batch):
         batch = torch.zeros(
             (*tuple(images_batch.shape), self.n_channels),  # add a channel dimension
             dtype=torch.float32
@@ -1866,13 +1907,15 @@ class CellposeSAMFeatures(FeatureExtractor):
         return batch[..., 0]  # keep only a single copy of the channel
         
     def _prepare_batches(self, images):
+        if self.do_normalize:
+            images = self.normalize_array(images)
         for i in range(0, len(images), self.batch_size):
             end = i + self.batch_size
             end = min(end, len(images))
             batch = images[i:end]  # (B, H, W)
             ts = range(i, end)
-            if self.do_normalize:
-                batch = self.normalize_batch(batch)
+            # if self.do_normalize:
+            # batch = self.normalize_array(batch)
             if len(batch.shape) == 3:
                 batch = batch.unsqueeze(1)
                 batch = batch.repeat(1, 3, 1, 1)
