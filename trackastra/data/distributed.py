@@ -6,7 +6,7 @@ import logging
 import pickle
 from collections.abc import Iterable
 from copy import deepcopy
-from pathlib import Path, WindowsPath
+from pathlib import Path
 from timeit import default_timer
 
 import numpy as np
@@ -20,12 +20,8 @@ from torch.utils.data import (
     DistributedSampler,
 )
 
-from trackastra.data.pretrained_features import (
-    EmbeddingsPCACompression,
-    PretrainedFeatureExtractorConfig,
-)
-
 from .data import CTCData, CTCDataAugPretrainedFeats, determine_ctc_class
+from .utils import make_hashable
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -34,20 +30,8 @@ logger.setLevel(logging.INFO)
 def cache_class(dataset_kwargs, cachedir=None):
     """A simple file cache for CTCData."""
 
-    def make_hashable(obj):
-        if isinstance(obj, tuple | list):
-            return tuple(make_hashable(e) for e in obj)
-        elif isinstance(obj, Path | WindowsPath):
-            return obj.as_posix()
-        elif isinstance(obj, dict):
-            return tuple(sorted((k, make_hashable(v)) for k, v in obj.items()))
-        elif isinstance(obj, PretrainedFeatureExtractorConfig):
-            cfg_dict = obj.to_dict()
-            return make_hashable(cfg_dict)
-        else:
-            return obj
-
     def hash_args_kwargs(*args, **kwargs):
+        # FIXME rotate_features arg should not be part of hash, if it changes cached data does not change
         hashable_args = tuple(make_hashable(arg) for arg in args)
         hashable_kwargs = make_hashable(kwargs)
         combined_serialized = json.dumps(
@@ -69,12 +53,12 @@ def cache_class(dataset_kwargs, cachedir=None):
                 logger.info(f"Loading cached dataset from {cache_file}")
                 with open(cache_file, "rb") as f:
                     c = pickle.load(f)
-                    if c.pretrained_config is not None:
-                        cfg = c.pretrained_config
-                        if cfg.pca_preprocessor_path is not None:
-                            pca = EmbeddingsPCACompression.from_pretrained_cfg(cfg)
-                            pca.load_from_file(cfg.pca_preprocessor_path)
-                            c.pca_preprocessor = pca
+                    # if c.pretrained_config is not None:
+                    #     cfg = c.pretrained_config
+                        # if cfg.pca_preprocessor_path is not None:
+                        #     pca = EmbeddingsPCACompression.from_pretrained_cfg(cfg)
+                        #     pca.load_from_file(cfg.pca_preprocessor_path)
+                        #     c.pca_preprocessor = pca
                         
                     return c
             else:
@@ -280,7 +264,7 @@ class BalancedDataModule(LightningDataModule):
                 )
                 for inp in inps
             ]
-            feature_extractor_save_paths = [
+            [
                 d.feature_extractor_save_path for d in ctc_datasets if split == "train"
             ]
             datasets[split] = torch.utils.data.ConcatDataset(
@@ -292,14 +276,14 @@ class BalancedDataModule(LightningDataModule):
                 f" {(default_timer() - start):.1f} s)\n\n"
             )
 
-            if self.dataset_kwargs.get("pretrained_backbone_config") is not None and split == "train":
-                cfg = self.dataset_kwargs["pretrained_backbone_config"]
-                if cfg.pca_preprocessor_path is not None:
-                    pca = EmbeddingsPCACompression.from_pretrained_cfg(cfg)
-                    embeddings_paths = []
-                    for p in feature_extractor_save_paths:
-                        embeddings_paths.append(p)
-                    pca.fit_on_embeddings(embeddings_paths)
+            # if self.dataset_kwargs.get("pretrained_backbone_config") is not None and split == "train":
+            #     cfg = self.dataset_kwargs["pretrained_backbone_config"]
+            #     if cfg.pca_preprocessor_path is not None:
+            #         pca = EmbeddingsPCACompression.from_pretrained_cfg(cfg)
+            #         embeddings_paths = []
+            #         for p in feature_extractor_save_paths:
+            #             embeddings_paths.append(p)
+            #         pca.fit_on_embeddings(embeddings_paths)
         
         del datasets
 
