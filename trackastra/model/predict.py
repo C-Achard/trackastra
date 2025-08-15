@@ -156,8 +156,12 @@ def predict_windows(
             A_batch = predict(batch, model)
 
         for i, A in enumerate(A_batch):
-            timepoints = batch[i]["timepoints"].numpy()
-            labels = batch[i]["labels"].numpy()
+            timepoints = batch[i]["timepoints"]
+            if not isinstance(timepoints, np.ndarray):
+                timepoints = batch[i]["timepoints"].numpy()
+            labels = batch[i]["labels"]
+            if not isinstance(labels, np.ndarray):
+                labels = batch[i]["labels"].numpy()
 
             dt = timepoints[None, :] - timepoints[:, None]
             time_mask = np.logical_and(dt <= delta_t, dt > 0)
