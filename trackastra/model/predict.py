@@ -51,11 +51,19 @@ def predict(batch: list[dict], model: TrackingTransformer) -> np.ndarray:
         pretrained_feats = pretrained_feats.to(device)
     timepoints = timepoints.to(device)
     coords = coords.to(device)
+    # Windows are padded to equal length; without the mask, padded tokens take part in
+    # attention and corrupt every window in the batch (upstream fix 507e513).
+    padding_mask = padded_batch["padding_mask"].to(device)
 
     # Concat timepoints to coordinates
     coords = torch.cat((timepoints.unsqueeze(2).float(), coords), dim=2)
     with torch.no_grad():
-        A = model(coords, features=feats, pretrained_features=pretrained_feats)
+        A = model(
+            coords,
+            features=feats,
+            pretrained_features=pretrained_feats,
+            padding_mask=padding_mask,
+        )
         A = model.normalize_output(A, timepoints, coords)
 
         # # Spatially far entries should not influence the causal normalization
