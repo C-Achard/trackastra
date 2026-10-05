@@ -11,6 +11,11 @@ import yaml
 from tqdm import tqdm
 
 from ..data import FeatureExtractor, build_windows, get_features, load_tiff_timeseries
+from ..data.disambiguation import (
+    DisambiguationMode,
+    coerce_disambiguation_mode,
+    rotate_window_features,
+)
 from ..tracking import TrackGraph, build_graph, track_greedy
 from ..utils import normalize
 from .model import TrackingTransformer
@@ -175,6 +180,7 @@ class Trackastra:
         n_workers: int = 0,
         normalize_imgs: bool = True,
         progbar_class=tqdm,
+        rotate_features: bool | str | DisambiguationMode | None = None,
     ):
         logger.info("Predicting weights for candidate graph")
         if normalize_imgs:
@@ -201,6 +207,11 @@ class Trackastra:
             progbar_class=progbar_class,
             as_torch=True,
         )
+
+        rotate_mode = coerce_disambiguation_mode(rotate_features)
+        if rotate_mode is not None:
+            logger.info(f"Rotating pretrained features ({rotate_mode.name})")
+            windows = rotate_window_features(windows, imgs.shape[-2:], rotate_mode)
 
         logger.info("Predicting windows")
         predictions = predict_windows(
@@ -256,6 +267,7 @@ class Trackastra:
         normalize_imgs: bool = True,
         progbar_class=tqdm,
         n_workers: int = 0,
+        rotate_features: bool | str | DisambiguationMode | None = None,
         **kwargs,
     ) -> TrackGraph:
         """Track objects across time frames.
@@ -273,6 +285,9 @@ class Trackastra:
             progbar_class: Progress bar class to use.
             n_workers: Number of worker processes for feature extraction.
             normalize_imgs: Whether to normalize the images.
+            rotate_features: Coordinate-based rotation of pretrained features, as applied
+                by CTCData during training (True is DisambiguationMode.Y). Opt-in: not read
+                from train_config.yaml. Defaults to None (no rotation).
             **kwargs: Additional arguments passed to tracking algorithm.
 
         Returns:
@@ -311,6 +326,7 @@ class Trackastra:
             normalize_imgs=normalize_imgs,
             progbar_class=progbar_class,
             n_workers=n_workers,
+            rotate_features=rotate_features,
         )
 
         track_graph = self._track_from_predictions(predictions, mode=mode, **kwargs)

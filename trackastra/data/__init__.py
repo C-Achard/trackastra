@@ -8,6 +8,7 @@ from .data import (
     collate_sequence_padding,
     extract_features_regionprops,
 )
+from .disambiguation import DisambiguationMode, coerce_disambiguation_mode
 from .distributed import (
     BalancedBatchSampler,
     BalancedDataModule,

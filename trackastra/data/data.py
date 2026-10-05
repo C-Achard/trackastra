@@ -32,6 +32,11 @@ from trackastra.data.augmentations import (
     RandomCrop,
     default_augmenter,
 )
+from trackastra.data.disambiguation import (
+    DisambiguationMode,
+    coerce_disambiguation_mode,
+)
+from trackastra.data.disambiguation import rotate_features as _rotate_features
 from trackastra.data.features import (
     _PROPERTIES,
     extract_features_patch,
@@ -206,7 +211,7 @@ class CTCData(Dataset):
         compress: bool = False,
         pretrained_backbone_config: PretrainedFeatureExtractorConfig | None = None,
         # pca_preprocessor: EmbeddingsPCACompression | None = None,
-        rotate_features: bool = False,
+        rotate_features: bool | str | DisambiguationMode = False,
         load_immediately: bool = True,
         **kwargs,
     ) -> None:
@@ -239,8 +244,9 @@ class CTCData(Dataset):
             Configuration for the pretrained backbone.
             If mode is set to "pretrained_feats", this configuration is used to extract features.
             Ignored otherwise.
-        rotate_features (bool):
+        rotate_features (bool | str | DisambiguationMode):
             Apply rotation to features based on (augmented) coordinates.
+            True is DisambiguationMode.Y (legacy), False disables rotation.
             Only valid if used with "pretrained_feats" or "pretrained_feats_aug" mode.
         load_immediately (bool):
             If True, load the data immediately. If False, load the data lazily.
@@ -400,7 +406,14 @@ class CTCData(Dataset):
             "pretrained_config": (
                 self.pretrained_config.to_dict() if self.pretrained_config else None
             ),
-            "rotate_features": self.rotate_feats,
+            # Y is stored as True to keep config hashes of legacy runs valid
+            "rotate_features": (
+                False
+                if self.rotate_feats is None
+                else True
+                if self.rotate_feats is DisambiguationMode.Y
+                else self.rotate_feats.value
+            ),
         }
 
     @property
@@ -1525,6 +1538,7 @@ class CTCData(Dataset):
                 coords,
                 image_shape,
                 n_rot_dims=self.pretrained_feat_dim,
+                mode=self.rotate_feats,
             )
 
         res = dict(
@@ -1650,6 +1664,20 @@ class CTCData(Dataset):
         else:
             self._compute_pretrained_model_features()
 
+    @property
+    def rotate_feats(self) -> DisambiguationMode | None:
+        """Rotation mode applied to pretrained features, None if disabled."""
+        if "_rotate_feats" not in self.__dict__:
+            # Instances pickled before this was a property (training dataset cache)
+            self._rotate_feats = coerce_disambiguation_mode(
+                self.__dict__.pop("rotate_feats", False)
+            )
+        return self._rotate_feats
+
+    @rotate_feats.setter
+    def rotate_feats(self, value: bool | str | DisambiguationMode | None) -> None:
+        self._rotate_feats = coerce_disambiguation_mode(value)
+
     @staticmethod
     def rotate_features(
         features: torch.Tensor,
@@ -1657,57 +1685,17 @@ class CTCData(Dataset):
         image_shape: tuple,
         n_rot_dims: int | None = None,
         skip_first: int = 0,
+        mode: DisambiguationMode | str = DisambiguationMode.Y,
     ) -> torch.Tensor:
-        """Applies a RoPE-style rotation to each feature vector based on the object's centroid.
-
-        Args:
-            features: (n_objects, hidden_state_size) tensor of features.
-            coords: (n_objects, 2) tensor of coordinates.
-            image_shape: (time, height, width) shape of the input image.
-            n_rot_dims: Number of feature dimensions to apply rotation to (must be even). If None, rotate all.
-            skip_first: Number of dimensions to skip at the beginning of the feature vector. No effect if 0.
-
-        Returns:
-            Rotated features: (n_objects, hidden_state_size)
-        """
-        import math
-
-        N, D = features.shape
-        assert skip_first < n_rot_dims, "skip_first must be less than n_rot_dims."
-        if n_rot_dims is None:
-            n_rot_dims = D
-        if skip_first != 0:
-            n_rot_dims = n_rot_dims - skip_first
-        assert n_rot_dims % 2 == 0, "n_rot_dims must be even for RoPE."
-        assert n_rot_dims <= D, "n_rot_dims cannot exceed feature dimension."
-
-        # Normalize x and y to [0, 1]
-        H, W = image_shape[-2], image_shape[-1]
-        x_norm = coords[:, 1] / H
-        y_norm = coords[:, 2] / W
-        # Compute two angles for x and y
-        angle_x = 2 * math.pi * x_norm
-        angle_y = 2 * math.pi * y_norm
-        # Interleave angles for each feature pair
-        angles = torch.stack([angle_x, angle_y], dim=1).repeat(1, n_rot_dims // 2)
-        angles = angles.view(N, n_rot_dims)
-        # Prepare cos/sin
-        cos = torch.cos(angles)
-        sin = torch.sin(angles)
-        # Interleave features for rotation
-        # try:
-        features_rot = features[:, skip_first : n_rot_dims + skip_first].view(N, -1, 2)
-        # except Exception:
-        #     breakpoint()
-        x_feat, y_feat = features_rot[..., 0], features_rot[..., 1]
-        x_rot = x_feat * cos[:, ::2] - y_feat * sin[:, ::2]
-        y_rot = x_feat * sin[:, ::2] + y_feat * cos[:, ::2]
-        rotated_part = torch.stack([x_rot, y_rot], dim=-1).reshape(N, n_rot_dims)
-        if n_rot_dims < D:
-            rotated = torch.cat([rotated_part, features[:, n_rot_dims:]], dim=1)
-        else:
-            rotated = rotated_part
-        return rotated  # (n_objects, d)
+        """See `trackastra.data.disambiguation.rotate_features`."""
+        return _rotate_features(
+            features,
+            coords,
+            image_shape,
+            n_rot_dims=n_rot_dims,
+            skip_first=skip_first,
+            mode=mode,
+        )
 
 
 class CTCDataAugPretrainedFeats(CTCData):
@@ -2415,6 +2403,7 @@ class CTCDataAugPretrainedFeats(CTCData):
                 coords,
                 image_shape,
                 n_rot_dims=self.pretrained_feat_dim,  # // 2
+                mode=self.rotate_feats,
             )
 
         res = dict(
